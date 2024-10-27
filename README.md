@@ -5,7 +5,7 @@ Este projeto contém um script Python que coleta e salva dados de opções da Bi
 ## Requisitos
 
 - Python 3.8 ou superior
-- MongoDB
+- Docker (MongoDB)
 - Conta na Binance e chave de API
 
 ## Instalação
