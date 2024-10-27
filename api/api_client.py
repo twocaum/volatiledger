@@ -34,6 +34,45 @@ def get_latest_record():
         return latest_record[0]
     return None
 
+csv_file_path = 'dados_completos.csv'  # Substitua pelo caminho correto do seu CSV
+
+# Ler o CSV usando pandas
+def read_csv_file(csv_path):
+    try:
+        df = pd.read_csv(csv_path)
+        logging.info("CSV lido com sucesso.")
+        return df
+    except FileNotFoundError:
+        logging.error(f"Arquivo {csv_path} não encontrado.")
+        return None
+    except Exception as e:
+        logging.error(f"Erro ao ler o arquivo CSV: {e}")
+        return None
+
+# Inserir os dados no MongoDB
+def insert_data_into_mongo(df):
+    try:
+        # Converter a coluna 'time' para datetime, se existir
+        if 'time' in df.columns:
+            try:
+                df['time'] = pd.to_datetime(df['time'], format='%Y-%m-%d %H:%M:%S.%f')
+            except ValueError:
+                logging.warning("Erro ao converter a coluna 'time' para datetime. Verifique o formato dos dados.")
+                return
+        
+        # Limpar a coleção antes de inserir novos dados
+        collection.delete_many({})
+        
+        # Inserir dados no MongoDB
+        payload = df.to_dict(orient='records')
+        if payload:
+            collection.insert_many(payload)
+            logging.info(f"{len(payload)} registros inseridos no MongoDB com sucesso.")
+        else:
+            logging.warning("Nenhum registro para inserir.")
+    except Exception as e:
+        logging.error(f"Erro ao inserir dados no MongoDB: {e}")
+
 def download_and_save_options(symbol, start_time, end_time, limit=1000, api_key=None):
     try:
         params = {
@@ -71,41 +110,54 @@ def download_and_save_options(symbol, start_time, end_time, limit=1000, api_key=
 
 def main():
     symbol = "BTCUSDT"
-    # Start time for data retrieval
-    latest_record = get_latest_record()
-    if latest_record:
-        start_time = latest_record['time'] + 1  # Continue from the last recorded timestamp
+
+    if os.path.exists(csv_file_path):
+        logging.info("Arquivo CSV detectado, iniciando leitura.")
+        df = read_csv_file(csv_file_path)
+        if df is not None and not df.empty:
+            insert_data_into_mongo(df)
+        else:
+            logging.warning("DataFrame está vazio ou não foi carregado corretamente.")
+            # Start time for data retrieval
+            latest_record = get_latest_record()
+            if latest_record:
+                start_time = latest_record['time'] + 1  # Continue from the last recorded timestamp
+            else:
+                # Default start date: 1st January 2024
+                start_time = int(datetime(2024, 1, 1).timestamp() * 1000)
+
+            # End date: 31st December 2024
+            end_date = int(datetime(2024, 7, 31, 23, 59, 59).timestamp() * 1000)
+
+            # Retrieve data in parallel chunks for beginning, middle, and end of the day
+            current_time = start_time
+            tasks = []
+
+            # Create ThreadPoolExecutor to manage threads
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                while current_time < end_date:
+                    day_start = current_time
+                    day_mid = day_start + (12 * 60 * 60 * 1000)  # Middle of the day (12 hours later in milliseconds)
+                    day_end = day_start + (23 * 60 * 60 * 1000)  # End of the day (23 hours later in milliseconds)
+
+                    # Add tasks for start, middle, and end of each day
+                    tasks.append(executor.submit(download_and_save_options, symbol, day_start, day_mid, api_key=api_key))
+                    tasks.append(executor.submit(download_and_save_options, symbol, day_mid + 1, day_end, api_key=api_key))
+
+                    # Move to next day
+                    current_time += 24 * 60 * 60 * 1000  # Increment by 24 hours in milliseconds
+
+                # Wait for all threads to complete
+                for future in as_completed(tasks):
+                    try:
+                        future.result()  # Get result to check if any exceptions occurred
+                    except Exception as exc:
+                        logging.error(f"Generated an exception: {exc}")
     else:
-        # Default start date: 1st January 2024
-        start_time = int(datetime(2024, 1, 1).timestamp() * 1000)
+        logging.warning("Arquivo CSV não encontrado. Nenhum dado foi carregado para o MongoDB.")
 
-    # End date: 31st December 2024
-    end_date = int(datetime(2024, 7, 31, 23, 59, 59).timestamp() * 1000)
-
-    # Retrieve data in parallel chunks for beginning, middle, and end of the day
-    current_time = start_time
-    tasks = []
-
-    # Create ThreadPoolExecutor to manage threads
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        while current_time < end_date:
-            day_start = current_time
-            day_mid = day_start + (12 * 60 * 60 * 1000)  # Middle of the day (12 hours later in milliseconds)
-            day_end = day_start + (23 * 60 * 60 * 1000)  # End of the day (23 hours later in milliseconds)
-
-            # Add tasks for start, middle, and end of each day
-            tasks.append(executor.submit(download_and_save_options, symbol, day_start, day_mid, api_key=api_key))
-            tasks.append(executor.submit(download_and_save_options, symbol, day_mid + 1, day_end, api_key=api_key))
-
-            # Move to next day
-            current_time += 24 * 60 * 60 * 1000  # Increment by 24 hours in milliseconds
-
-        # Wait for all threads to complete
-        for future in as_completed(tasks):
-            try:
-                future.result()  # Get result to check if any exceptions occurred
-            except Exception as exc:
-                logging.error(f"Generated an exception: {exc}")
+    
+    
 
     # Create dashboard with Dash to visualize data
     app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -190,7 +242,7 @@ def main():
         prevent_initial_call=True
     )
     def download_csv(n_clicks):
-        return dcc.send_data_frame(df_daily.to_csv, "dados_diarios.csv")
+        return dcc.send_data_frame(df_daily.to_csv, "dados_completos.csv")
 
     # Callback to show/hide the table
     @app.callback(

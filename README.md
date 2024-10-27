@@ -67,6 +67,21 @@ python api/api_client.py
 
 O script irá buscar dados de opções da Binance a partir da data inicial especificada e armazená-los no banco de dados MongoDB.
 
+### Uso do CSV
+
+Além da coleta de dados da API da Binance, o projeto permite importar dados de um arquivo CSV. Para isso, certifique-se de que o arquivo `dados_completos.csv` esteja no caminho correto.
+
+- O script irá detectar automaticamente o arquivo CSV e carregar os dados no MongoDB.
+- Caso o arquivo CSV seja encontrado, ele será lido e os dados serão inseridos na coleção `options_chain` do banco de dados `binance_data`.
+- O script está preparado para lidar com possíveis erros no formato do CSV, como problemas na conversão de datas ou ausência de colunas esperadas, e registrará esses erros no log.
+
+Para executar o script com o CSV:
+```bash
+python api/api_client.py
+```
+
+Certifique-se de que o arquivo CSV esteja disponível na raiz do projeto ou atualize o caminho no script, se necessário.
+
 ## Estrutura do Projeto
 
 - `api/api_client.py`: Script principal que coleta e salva os dados.
@@ -82,11 +97,13 @@ O script irá buscar dados de opções da Binance a partir da data inicial espec
 - Certifique-se de configurar o `MONGO_URI` corretamente, especialmente se estiver usando credenciais personalizadas.
 - A chave da API deve ser válida para acessar os dados da Binance.
 - Respeite os limites de taxa da API da Binance, fazendo ajustes no tempo de espera (`time.sleep`) se necessário.
+- Caso utilize o CSV, verifique se ele está no formato esperado para evitar erros na inserção dos dados.
 
 ## Problemas Comuns
 
 - **Erro de Autenticação**: Verifique se a chave da API está correta e se tem as permissões necessárias.
 - **Conexão com MongoDB**: Verifique se o MongoDB está em execução e se a URI está correta.
+- **Problemas com o CSV**: Certifique-se de que o arquivo CSV está no local correto e que possui as colunas esperadas, como `time` e `markPrice`.
 
 ## Licença
 
