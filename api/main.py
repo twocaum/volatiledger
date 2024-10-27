@@ -52,8 +52,8 @@ def main():
     download_and_save_btcusd(symbol, start_time, end_time)
 
     # Iniciar o agendamento da coleta de dados
-    schedule.every(10).minutes.do(fetch_and_store_open_interest_data)
-    schedule.every(10).minutes.do(fetch_and_store_futures_data)
+    schedule.every(1).minutes.do(fetch_and_store_open_interest_data)
+    schedule.every(1).minutes.do(fetch_and_store_futures_data)
     
     # Executar imediatamente na inicialização
     fetch_and_store_open_interest_data()

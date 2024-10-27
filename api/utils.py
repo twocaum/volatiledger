@@ -185,7 +185,7 @@ def process_futures_data(data):
 
 
 # Função para coletar histórico de Open Interest para BTC
-def fetch_open_interest_data(symbol="BTCUSD", contract_type="PERPETUAL", interval="1h", limit=300):
+def fetch_open_interest_data(symbol="BTCUSD", contract_type="PERPETUAL", interval="1h", limit=100):
     try:
         open_interest_data = binance_futures.open_interest_hist(symbol, contract_type, interval, limit=limit)
         df_open_interest = pd.DataFrame(open_interest_data)
@@ -215,10 +215,14 @@ def fetch_and_store_futures_data():
     logging.info("Iniciando coleta de dados de futuros de BTC...")
     symbols = ["BTCUSD"]
     interval = "1h"
-    start_time = int(datetime(2024, 7, 1).timestamp() * 1000)
-    end_time = int(datetime(2024, 1, 1).timestamp() * 1000)
+    
+    # Defina o start_time como uma data passada e o end_time como a data atual
+    start_time = int(datetime(2023, 1, 1).timestamp() * 1000)  # Ajuste a data conforme necessário
+    end_time = int(datetime.now().timestamp() * 1000)  # Coleta até o horário atual
+
     futures_data = fetch_futures_data_parallel(symbols, interval, start_time, end_time)
     df_futures = process_futures_data(futures_data)
+    
     if df_futures is not None and not df_futures.empty:
         insert_data_into_mongo(df_futures, collection_futures)
         logging.info("Dados de futuros de BTC atualizados.")

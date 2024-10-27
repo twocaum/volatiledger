@@ -219,15 +219,14 @@ def generate_futures_layout():
                 )
             ], className="mb-4"),
             dbc.Row([
-                dbc.Col(dcc.Graph(id='lastPrice-graph'), md=6),
+                dbc.Col(dcc.Graph(id='last-price-graph'), md=6),
                 dbc.Col(dcc.Graph(id='volume-graph'), md=6),
             ]),
-            # Botão de download dos dados de futuros
             dbc.Row([
                 dbc.Col([
                     html.Button("Baixar Dados de Futuros", id="btn-download-futures", className="mt-3 btn btn-primary"),
                     dcc.Download(id="download-futures-csv")
-                ], width='auto'),
+                ], width='auto')
             ], className="mt-3"),
         ], fluid=True)
     else:
@@ -237,6 +236,37 @@ def generate_futures_layout():
             ])
         ], fluid=True)
     return layout
+
+# Callback para atualizar os gráficos de futuros com base no símbolo selecionado
+@app_dash.callback(
+    [Output('last-price-graph', 'figure'), Output('volume-graph', 'figure')],
+    [Input('symbol-dropdown-futures', 'value')]
+)
+def update_futures_graphs(selected_symbol):
+    # Filtrar os dados para o símbolo selecionado
+    df_filtered = df_futures[df_futures['symbol'] == selected_symbol]
+    
+    # Gráfico de Preço de Fechamento ao Longo do Tempo
+    fig_last_price = px.line(
+        df_filtered,
+        x='time',
+        y='close',
+        title=f'Preço de Fechamento ao Longo do Tempo para {selected_symbol}',
+        labels={'time': 'Data', 'close': 'Preço de Fechamento (USD)'},
+        markers=True
+    )
+    
+    # Gráfico de Volume ao Longo do Tempo
+    fig_volume = px.bar(
+        df_filtered,
+        x='time',
+        y='volume',
+        title=f'Volume ao Longo do Tempo para {selected_symbol}',
+        labels={'time': 'Data', 'volume': 'Volume'},
+    )
+
+    return fig_last_price, fig_volume
+
 
 # Callback para atualizar os gráficos de Open Interest
 @app_dash.callback(
