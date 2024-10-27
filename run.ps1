@@ -13,4 +13,4 @@ pip install -r requirements.txt
 
 # Executar o script Python do API client
 Write-Output "Executando o API client..."
-python api/api_client.py
+python api/main.py
