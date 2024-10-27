@@ -1,13 +1,15 @@
-# utils.py
-
 import os
 import pandas as pd
 from pymongo import MongoClient
 from dotenv import load_dotenv
-import requests
+from binance.cm_futures import CMFutures as BinanceFutures
 from datetime import datetime
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
+import logging
+
+# Configurar o logging
+logging.basicConfig(level=logging.INFO)
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -15,24 +17,28 @@ load_dotenv()
 # Definir a URI do MongoDB a partir do .env
 MONGO_URI = os.getenv('MONGO_URI')
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+csv_file_path = os.path.join(current_dir, 'dados_completos.csv')
+
+# Chaves da API Binance a partir do .env
+BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
+BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
+
 # Conectar ao MongoDB
 client = MongoClient(MONGO_URI)
 db = client['binance_data']
 
 # Coleções do MongoDB
 collection_csv = db['csv_data']
-collection_options = db['options_data']
 collection_futures = db['futures_data']
+collection_open_interest = db['open_interest_data']
 
-# Caminho para o arquivo CSV relativo à localização do script
-current_dir = os.path.dirname(os.path.abspath(__file__))
-csv_file_path = os.path.join(current_dir, 'dados_completos.csv')
+# Inicializar cliente da Binance
+binance_futures = BinanceFutures(key=BINANCE_API_KEY, secret=BINANCE_API_SECRET)
 
 def get_latest_record():
     latest_record = list(collection_csv.find().sort("time", -1).limit(1))
-    if len(latest_record) > 0:
-        return latest_record[0]
-    return None
+    return latest_record[0] if latest_record else None
 
 def download_and_save_btcusd(symbol, start_time, end_time, limit=1000):
     base_url = "https://api.binance.com/api/v3/aggTrades"
@@ -44,7 +50,6 @@ def download_and_save_btcusd(symbol, start_time, end_time, limit=1000):
             "limit": limit
         }
         data_fetched = True
-
         while data_fetched:
             response = requests.get(base_url, params=params)
             if response.status_code == 200:
@@ -59,215 +64,24 @@ def download_and_save_btcusd(symbol, start_time, end_time, limit=1000):
                         }
                         try:
                             collection_csv.insert_one(trade_data)
-                            print(f"Inserted record for {datetime.fromtimestamp(trade_data['time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')} with price {trade_data['price']}")
+                            logging.info(f"Inserted record for {datetime.fromtimestamp(trade_data['time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')} with price {trade_data['price']}")
                         except Exception as e:
-                            print(f"Error inserting data: {e}")
-                    # Atualizar os parâmetros para a próxima requisição
+                            logging.error(f"Error inserting data: {e}")
                     last_time = data[-1]['T']
                     params['startTime'] = last_time + 1  # Evitar duplicatas
                 else:
                     data_fetched = False
             else:
-                print(f"Error downloading data: {response.status_code} - {response.text}")
+                logging.error(f"Error downloading data: {response.status_code} - {response.text}")
                 data_fetched = False
-
     except Exception as e:
-        print(f"Error downloading or saving data: {e}")
-
-def get_all_option_symbols():
-    url = 'https://eapi.binance.com/eapi/v1/exchangeInfo'  # Endpoint correto para opções
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-
-        # Inspecionar as chaves disponíveis na resposta
-        print("Chaves na resposta da API exchangeInfo:", data.keys())
-
-        # Extrair os símbolos de opções
-        if 'symbols' in data:
-            symbols = [s['symbol'] for s in data['symbols']]
-            print(f"Encontrados {len(symbols)} símbolos de opções.")
-        else:
-            print("Nenhum símbolo de opção encontrado na resposta da API.")
-            symbols = []
-
-        return symbols
-    except requests.exceptions.RequestException as e:
-        print(f"Erro ao obter informações de opções: {e}")
-        return []
-    except KeyError as e:
-        print(f"Chave inesperada na resposta da API: {e}")
-        return []
-
-def fetch_option_data(symbol):
-    url = 'https://eapi.binance.com/eapi/v1/mark'
-    params = {'symbol': symbol}
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        return data
-    except requests.exceptions.RequestException as e:
-        print(f"Erro ao buscar dados para o símbolo {symbol}: {e}")
-        return None
-
-def fetch_options_data_parallel():
-    symbols = get_all_option_symbols()
-    data_list = []
-
-    if not symbols:
-        print("Nenhum símbolo de opção encontrado.")
-        return None
-
-    # Limites de taxa da Binance para opções
-    # Consulte a documentação para obter informações atualizadas sobre os limites de taxa
-    max_requests_per_minute = 1200  # Ajuste conforme necessário
-    batch_size = max_requests_per_minute
-
-    # Dividir símbolos em lotes
-    symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-
-    try:
-        for batch in symbol_batches:
-            with ThreadPoolExecutor(max_workers=100) as executor:
-                future_to_symbol = {executor.submit(fetch_option_data, symbol): symbol for symbol in batch}
-                for future in as_completed(future_to_symbol):
-                    symbol = future_to_symbol[future]
-                    try:
-                        data = future.result()
-                        if data:
-                            data_list.append(data)
-                    except Exception as exc:
-                        print(f"Símbolo {symbol} gerou uma exceção: {exc}")
-            # Esperar 60 segundos entre os lotes para respeitar o limite de taxa
-            if len(symbol_batches) > 1:
-                print("Esperando 60 segundos para respeitar o limite de taxa da API...")
-                time.sleep(60)
-    except Exception as e:
-        print(f"Erro ao buscar dados da API: {e}")
-        return None
-
-    return data_list
-
-def process_options_data(data):
-    if data is None:
-        return None
-    df = pd.DataFrame(data)
-    numeric_columns = [
-        'markPrice', 'bidIV', 'askIV', 'markIV',
-        'delta', 'theta', 'gamma', 'vega',
-        'highPriceLimit', 'lowPriceLimit', 'riskFreeInterest'
-    ]
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    df['time'] = pd.Timestamp.now()
-    return df
-
-def get_all_futures_symbols():
-    url = 'https://fapi.binance.com/fapi/v1/exchangeInfo'
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-
-        # Inspecionar as chaves disponíveis na resposta
-        print("Chaves na resposta da API exchangeInfo:", data.keys())
-
-        # Extrair os símbolos de futuros
-        if 'symbols' in data:
-            symbols = [s['symbol'] for s in data['symbols']]
-            print(f"Encontrados {len(symbols)} símbolos de futuros.")
-        else:
-            print("Nenhum símbolo de futuros encontrado na resposta da API.")
-            symbols = []
-
-        return symbols
-    except requests.exceptions.RequestException as e:
-        print(f"Erro ao obter informações de futuros: {e}")
-        return []
-
-def fetch_future_data(symbol):
-    url = 'https://fapi.binance.com/fapi/v1/ticker/24hr'
-    params = {'symbol': symbol}
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        return data
-    except requests.exceptions.RequestException as e:
-        print(f"Erro ao buscar dados para o símbolo {symbol}: {e}")
-        return None
-
-def fetch_futures_data_parallel():
-    symbols = get_all_futures_symbols()
-    data_list = []
-
-    if not symbols:
-        print("Nenhum símbolo de futuros encontrado.")
-        return None
-
-    # Limites de taxa da Binance para futuros
-    # Consulte a documentação para obter informações atualizadas sobre os limites de taxa
-    max_requests_per_minute = 1200  # Ajuste conforme necessário
-    batch_size = max_requests_per_minute
-
-    # Dividir símbolos em lotes
-    symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-
-    try:
-        for batch in symbol_batches:
-            with ThreadPoolExecutor(max_workers=100) as executor:
-                future_to_symbol = {executor.submit(fetch_future_data, symbol): symbol for symbol in batch}
-                for future in as_completed(future_to_symbol):
-                    symbol = future_to_symbol[future]
-                    try:
-                        data = future.result()
-                        if data:
-                            data_list.append(data)
-                    except Exception as exc:
-                        print(f"Símbolo {symbol} gerou uma exceção: {exc}")
-            # Esperar 60 segundos entre os lotes para respeitar o limite de taxa
-            if len(symbol_batches) > 1:
-                print("Esperando 60 segundos para respeitar o limite de taxa da API...")
-                time.sleep(60)
-    except Exception as e:
-        print(f"Erro ao buscar dados da API: {e}")
-        return None
-
-    return data_list
-
-def process_futures_data(data):
-    if data is None:
-        return None
-    df = pd.DataFrame(data)
-    numeric_columns = ['lastPrice', 'priceChangePercent', 'volume', 'openPrice', 'highPrice', 'lowPrice']
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    df['time'] = pd.Timestamp.now()
-    return df
-
-def insert_data_into_mongo(df, collection):
-    try:
-        if 'time' in df.columns:
-            df['time'] = pd.to_datetime(df['time'], errors='coerce')
-
-        payload = df.to_dict(orient='records')
-        if payload:
-            collection.insert_many(payload)
-            print(f"{len(payload)} registros inseridos no MongoDB com sucesso na coleção '{collection.name}'.")
-        else:
-            print("Nenhum registro para inserir.")
-    except Exception as e:
-        print(f"Erro ao inserir dados no MongoDB: {e}")
+        logging.error(f"Error downloading or saving data: {e}")
 
 def fetch_data(collection):
     cursor = collection.find()
     df = pd.DataFrame(list(cursor))
     if df.empty:
-        print(f"Nenhum dado encontrado na coleção '{collection.name}' no MongoDB")
+        logging.info(f"Nenhum dado encontrado na coleção '{collection.name}' no MongoDB")
     else:
         if 'time' in df.columns:
             df['time'] = pd.to_datetime(df['time'], errors='coerce')
@@ -275,35 +89,160 @@ def fetch_data(collection):
             df.drop(columns=['_id'], inplace=True)
     return df
 
-def read_csv_file():
+# Função para coletar dados históricos do contrato contínuo
+def get_historical_futures_data(symbol, interval, start_time, end_time, limit=1000):
     try:
-        print(f"Lendo arquivo CSV do caminho: {csv_file_path}")
-        df = pd.read_csv(csv_file_path)
-        print("CSV lido com sucesso.")
-        return df
-    except FileNotFoundError:
-        print(f"Arquivo {csv_file_path} não encontrado.")
-        return None
+        candles = binance_futures.continuous_klines(
+            pair=symbol,
+            contractType="PERPETUAL",
+            interval=interval,
+            startTime=start_time,
+            endTime=end_time,
+            limit=limit
+        )
+        return candles
     except Exception as e:
-        print(f"Erro ao ler o arquivo CSV: {e}")
+        logging.error(f"Erro ao buscar dados históricos: {e}")
         return None
 
-def fetch_and_store_options_data():
-    print("Iniciando coleta de dados de opções...")
-    options_data = fetch_options_data_parallel()
-    df_options = process_options_data(options_data)
-    if df_options is not None and not df_options.empty:
-        insert_data_into_mongo(df_options, collection_options)
-        print("Dados de opções atualizados.")
-    else:
-        print("DataFrame de opções está vazio ou não foi carregado corretamente.")
+# Função para coletar dados de futuros de BTC
+def fetch_future_data(symbol, interval, start_time, end_time):
+    try:
+        # Usa o símbolo correto e o tipo de contrato "PERPETUAL"
+        candles = binance_futures.continuous_klines(
+            pair=symbol,
+            contractType="PERPETUAL",
+            interval=interval,
+            startTime=start_time,
+            endTime=end_time,
+            limit=1000
+        )
+        
+        # Verifica se a resposta é uma lista de candles
+        if isinstance(candles, list):
+            # Transformar cada candle em um dicionário com campos nomeados
+            candle_data = []
+            for candle in candles:
+                candle_data.append({
+                    "open_time": candle[0],
+                    "open": float(candle[1]),
+                    "high": float(candle[2]),
+                    "low": float(candle[3]),
+                    "close": float(candle[4]),
+                    "volume": float(candle[5]),
+                    "close_time": candle[6],
+                    "quote_asset_volume": float(candle[7]),
+                    "number_of_trades": candle[8],
+                    "taker_buy_base_asset_volume": float(candle[9]),
+                    "taker_buy_quote_asset_volume": float(candle[10])
+                })
+            return candle_data
+        else:
+            logging.error(f"Formato inesperado de dados para {symbol}: {candles}")
+            return None
+    except Exception as e:
+        logging.error(f"Erro ao buscar dados históricos para {symbol}: {e}")
+        return None
+
+# Coleta de dados de futuros em paralelo
+def fetch_futures_data_parallel(symbols, interval, start_time, end_time):
+    data_list = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(fetch_future_data, symbol, interval, start_time, end_time): symbol
+            for symbol in symbols
+        }
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                data = future.result()
+                if data:
+                    for record in data:
+                        record['symbol'] = symbol  # Adiciona o símbolo em cada candle
+                    data_list.extend(data)
+            except Exception as exc:
+                logging.error(f"Símbolo {symbol} gerou uma exceção: {exc}")
+    return data_list
+
+# Processar e armazenar dados de futuros
+def process_futures_data(data):
+    if not data:
+        return None
+    df = pd.DataFrame(data)
+    
+    # Converte colunas numéricas
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Converte o tempo de abertura para formato datetime
+    if 'open_time' in df.columns:
+        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    
+    return df
+
+
+
+# Função para coletar histórico de Open Interest para BTC
+def fetch_open_interest_data(symbol="BTCUSD", contract_type="PERPETUAL", interval="1h", limit=300):
+    try:
+        open_interest_data = binance_futures.open_interest_hist(symbol, contract_type, interval, limit=limit)
+        df_open_interest = pd.DataFrame(open_interest_data)
+        df_open_interest['timestamp'] = pd.to_datetime(df_open_interest['timestamp'], unit='ms')
+        return df_open_interest
+    except Exception as e:
+        logging.error(f"Erro ao buscar dados de Open Interest para {symbol}: {e}")
+        return None
+
+# Função para inserir dados no MongoDB
+def insert_data_into_mongo(df, collection):
+    try:
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        elif 'time' in df.columns:
+            df['time'] = pd.to_datetime(df['time'], errors='coerce')
+        payload = df.to_dict(orient='records')
+        if payload:
+            collection.insert_many(payload)
+            logging.info(f"{len(payload)} registros inseridos no MongoDB com sucesso na coleção '{collection.name}'.")
+        else:
+            logging.info("Nenhum registro para inserir.")
+    except Exception as e:
+        logging.error(f"Erro ao inserir dados no MongoDB: {e}")
 
 def fetch_and_store_futures_data():
-    print("Iniciando coleta de dados de futuros...")
-    futures_data = fetch_futures_data_parallel()
+    logging.info("Iniciando coleta de dados de futuros de BTC...")
+    symbols = ["BTCUSD"]
+    interval = "1h"
+    start_time = int(datetime(2024, 7, 1).timestamp() * 1000)
+    end_time = int(datetime(2024, 1, 1).timestamp() * 1000)
+    futures_data = fetch_futures_data_parallel(symbols, interval, start_time, end_time)
     df_futures = process_futures_data(futures_data)
     if df_futures is not None and not df_futures.empty:
         insert_data_into_mongo(df_futures, collection_futures)
-        print("Dados de futuros atualizados.")
+        logging.info("Dados de futuros de BTC atualizados.")
     else:
-        print("DataFrame de futuros está vazio ou não foi carregado corretamente.")
+        logging.info("DataFrame de futuros de BTC está vazio ou não foi carregado corretamente.")
+
+def fetch_and_store_open_interest_data():
+    logging.info("Iniciando coleta de dados de Open Interest para BTC...")
+    df_open_interest = fetch_open_interest_data()
+    if df_open_interest is not None and not df_open_interest.empty:
+        insert_data_into_mongo(df_open_interest, collection_open_interest)
+        logging.info("Dados de Open Interest de BTC atualizados.")
+    else:
+        logging.info("DataFrame de Open Interest de BTC está vazio ou não foi carregado corretamente.")
+
+def read_csv_file():
+    try:
+        logging.info(f"Lendo arquivo CSV do caminho: {csv_file_path}")
+        df = pd.read_csv(csv_file_path)
+        logging.info("CSV lido com sucesso.")
+        return df
+    except FileNotFoundError:
+        logging.error(f"Arquivo {csv_file_path} não encontrado.")
+        return None
+    except Exception as e:
+        logging.error(f"Erro ao ler o arquivo CSV: {e}")
+        return None

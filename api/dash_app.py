@@ -8,7 +8,7 @@ import pandas as pd
 from utils import (
     fetch_data,
     collection_csv,
-    collection_options,
+    collection_open_interest,
     collection_futures,
 )
 import plotly.express as px
@@ -20,17 +20,17 @@ app_dash = dash.Dash(__name__, server=flask_app, external_stylesheets=[dbc.theme
 
 # Variáveis globais para armazenar os DataFrames
 df_csv = pd.DataFrame()
-df_options = pd.DataFrame()
+df_open_interest = pd.DataFrame()
 df_futures = pd.DataFrame()
 df_daily = pd.DataFrame()
 
 # Função para carregar e processar os dados
 def load_data():
-    global df_csv, df_options, df_futures, df_daily
+    global df_csv, df_open_interest, df_futures, df_daily
 
     # Carregar dados do MongoDB
     df_csv = fetch_data(collection_csv)
-    df_options = fetch_data(collection_options)
+    df_open_interest = fetch_data(collection_open_interest)
     df_futures = fetch_data(collection_futures)
 
     # Processar dados do CSV
@@ -40,8 +40,11 @@ def load_data():
         df_csv['time'] = pd.to_datetime(df_csv['time'], unit='ms')
         df_csv.set_index('time', inplace=True)
 
-        # Resample diário para obter agregações diferentes dos dados
-        df_daily = df_csv.resample('D').agg({
+        # Filtrar apenas dados a partir de 2020
+        df_csv = df_csv[df_csv.index >= "2020-01-01"]
+
+        # Resample semanal para reduzir a quantidade de pontos
+        df_daily = df_csv.resample('W').agg({
             'price': ['mean', 'min', 'max'],
             'quantity': 'sum'
         }).reset_index()
@@ -51,18 +54,19 @@ def load_data():
     else:
         df_daily = pd.DataFrame()
 
-    # Processar dados de opções, se necessário
-    if not df_options.empty and 'time' in df_options.columns:
-        df_options['time'] = pd.to_datetime(df_options['time'], errors='coerce')
+    # Processar dados de Open Interest, se necessário
+    if not df_open_interest.empty and 'timestamp' in df_open_interest.columns:
+        df_open_interest['timestamp'] = pd.to_datetime(df_open_interest['timestamp'], errors='coerce')
 
     # Processar dados de futuros, se necessário
     if not df_futures.empty and 'time' in df_futures.columns:
         df_futures['time'] = pd.to_datetime(df_futures['time'], errors='coerce')
 
+
 # Carregar os dados na inicialização
 load_data()
 
-# Layout do Dash com abas para CSV, Dados de Opções e Dados de Futuros
+# Layout do Dash com abas para CSV, Dados de Open Interest e Dados de Futuros
 app_dash.layout = dbc.Container([
     dbc.Row([
         dbc.Col(html.H1("Dashboard Binance Data", className="text-center my-4"), width=12)
@@ -71,7 +75,7 @@ app_dash.layout = dbc.Container([
         dbc.Col(
             dcc.Tabs(id='tabs', value='tab-csv', children=[
                 dcc.Tab(label='Dados CSV', value='tab-csv'),
-                dcc.Tab(label='Dados de Opções', value='tab-options'),
+                dcc.Tab(label='Dados de Open Interest', value='tab-open-interest'),
                 dcc.Tab(label='Dados de Futuros', value='tab-futures'),
             ]),
             width=12
@@ -93,8 +97,8 @@ app_dash.layout = dbc.Container([
 def render_content(tab):
     if tab == 'tab-csv':
         return generate_csv_layout()
-    elif tab == 'tab-options':
-        return generate_options_layout()
+    elif tab == 'tab-open-interest':
+        return generate_open_interest_layout()
     elif tab == 'tab-futures':
         return generate_futures_layout()
 
@@ -167,53 +171,38 @@ def download_csv(n_clicks):
     else:
         return None
 
-def generate_options_layout():
-    if not df_options.empty and 'symbol' in df_options.columns:
-        symbols = df_options['symbol'].unique()
+def generate_open_interest_layout():
+    if not df_open_interest.empty:
         layout = dbc.Container([
             dbc.Row([
-                dbc.Col(
-                    dcc.Dropdown(
-                        id='symbol-dropdown-options',
-                        options=[{'label': sym, 'value': sym} for sym in symbols],
-                        value=symbols[0],
-                        placeholder="Selecione um símbolo de opção"
-                    ), width=6
-                )
-            ], className="mb-4"),
-            dbc.Row([
-                dbc.Col(dcc.Graph(id='markIV-graph'), md=6),
-                dbc.Col(dcc.Graph(id='markPrice-graph'), md=6),
+                dbc.Col(dcc.Graph(id='open-interest-graph'), md=12)
             ]),
             dbc.Row([
                 dbc.Col([
-                    html.P("Selecione um intervalo de tempo:"),
-                    dcc.DatePickerRange(
-                        id='date-picker-range-options',
-                        start_date=df_options['time'].min().date(),
-                        end_date=df_options['time'].max().date()
-                    )
-                ], width=6)
-            ], className="mt-4"),
-            dbc.Row([
-                dbc.Col(dcc.Graph(id='filtered-markIV-graph'), md=6),
-                dbc.Col(dcc.Graph(id='filtered-markPrice-graph'), md=6),
-            ]),
-            # Botão de download dos dados de opções
-            dbc.Row([
-                dbc.Col([
-                    html.Button("Baixar Dados de Opções", id="btn-download-options", className="mt-3 btn btn-primary"),
-                    dcc.Download(id="download-options-csv")
+                    html.Button("Baixar Dados de Open Interest", id="btn-download-open-interest", className="mt-3 btn btn-primary"),
+                    dcc.Download(id="download-open-interest-csv")
                 ], width='auto'),
             ], className="mt-3"),
         ], fluid=True)
     else:
         layout = dbc.Container([
             dbc.Row([
-                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados de opções.", className="text-center"))
+                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados de Open Interest.", className="text-center"))
             ])
         ], fluid=True)
     return layout
+
+# Callback para baixar o CSV de Open Interest
+@app_dash.callback(
+    Output("download-open-interest-csv", "data"),
+    Input("btn-download-open-interest", "n_clicks"),
+    prevent_initial_call=True
+)
+def download_open_interest_csv(n_clicks):
+    if not df_open_interest.empty:
+        return dcc.send_data_frame(df_open_interest.to_csv, "dados_open_interest.csv")
+    else:
+        return None
 
 def generate_futures_layout():
     if not df_futures.empty and 'symbol' in df_futures.columns:
@@ -249,111 +238,21 @@ def generate_futures_layout():
         ], fluid=True)
     return layout
 
-# Callback para atualizar os gráficos das opções
+# Callback para atualizar os gráficos de Open Interest
 @app_dash.callback(
-    [Output('markIV-graph', 'figure'),
-     Output('markPrice-graph', 'figure')],
-    [Input('symbol-dropdown-options', 'value')]
+    Output('open-interest-graph', 'figure'),
+    Input('interval-component', 'n_intervals')
 )
-def update_options_graphs(selected_symbol):
-    if selected_symbol:
-        filtered_df = df_options[df_options['symbol'] == selected_symbol]
-        fig_markIV = px.line(
-            filtered_df,
-            x='time',
-            y='markIV',
-            title=f'Volatilidade Implícita (markIV) para {selected_symbol}',
-            labels={'time': 'Tempo', 'markIV': 'Volatilidade Implícita'},
-            markers=True
-        )
-        fig_markPrice = px.line(
-            filtered_df,
-            x='time',
-            y='markPrice',
-            title=f'Preço de Marca (markPrice) para {selected_symbol}',
-            labels={'time': 'Tempo', 'markPrice': 'Preço de Marca'},
-            markers=True
-        )
-        return fig_markIV, fig_markPrice
-    else:
-        return {}, {}
-
-# Callback para atualizar gráficos filtrados por data (opções)
-@app_dash.callback(
-    [Output('filtered-markIV-graph', 'figure'),
-     Output('filtered-markPrice-graph', 'figure')],
-    [Input('symbol-dropdown-options', 'value'),
-     Input('date-picker-range-options', 'start_date'),
-     Input('date-picker-range-options', 'end_date')]
-)
-def update_filtered_options_graphs(selected_symbol, start_date, end_date):
-    if selected_symbol and start_date and end_date:
-        mask = (
-            (df_options['symbol'] == selected_symbol) &
-            (df_options['time'] >= pd.to_datetime(start_date)) &
-            (df_options['time'] <= pd.to_datetime(end_date))
-        )
-        filtered_df = df_options[mask]
-        fig_markIV = px.line(
-            filtered_df,
-            x='time',
-            y='markIV',
-            title=f'Volatilidade Implícita (markIV) para {selected_symbol} ({start_date} a {end_date})',
-            labels={'time': 'Tempo', 'markIV': 'Volatilidade Implícita'},
-            markers=True
-        )
-        fig_markPrice = px.line(
-            filtered_df,
-            x='time',
-            y='markPrice',
-            title=f'Preço de Marca (markPrice) para {selected_symbol} ({start_date} a {end_date})',
-            labels={'time': 'Tempo', 'markPrice': 'Preço de Marca'},
-            markers=True
-        )
-        return fig_markIV, fig_markPrice
-    else:
-        return {}, {}
-
-# Callback para baixar o CSV de opções
-@app_dash.callback(
-    Output("download-options-csv", "data"),
-    Input("btn-download-options", "n_clicks"),
-    prevent_initial_call=True
-)
-def download_options_csv(n_clicks):
-    if not df_options.empty:
-        return dcc.send_data_frame(df_options.to_csv, "dados_opcoes.csv")
-    else:
-        return None
-
-# Callback para atualizar os gráficos dos futuros
-@app_dash.callback(
-    [Output('lastPrice-graph', 'figure'),
-     Output('volume-graph', 'figure')],
-    [Input('symbol-dropdown-futures', 'value')]
-)
-def update_futures_graphs(selected_symbol):
-    if selected_symbol:
-        filtered_df = df_futures[df_futures['symbol'] == selected_symbol]
-        fig_lastPrice = px.line(
-            filtered_df,
-            x='time',
-            y='lastPrice',
-            title=f'Último Preço para {selected_symbol}',
-            labels={'time': 'Tempo', 'lastPrice': 'Último Preço'},
-            markers=True
-        )
-        fig_volume = px.line(
-            filtered_df,
-            x='time',
-            y='volume',
-            title=f'Volume para {selected_symbol}',
-            labels={'time': 'Tempo', 'volume': 'Volume'},
-            markers=True
-        )
-        return fig_lastPrice, fig_volume
-    else:
-        return {}, {}
+def update_open_interest_graph(n_intervals):
+    fig = px.line(
+        df_open_interest,
+        x='timestamp',
+        y='sumOpenInterest',
+        title='Open Interest ao Longo do Tempo',
+        labels={'timestamp': 'Tempo', 'sumOpenInterest': 'Open Interest'},
+        markers=True
+    )
+    return fig
 
 # Callback para baixar o CSV de futuros
 @app_dash.callback(

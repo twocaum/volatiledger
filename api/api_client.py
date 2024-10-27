@@ -6,7 +6,7 @@ from utils import csv_file_path
 from utils import (
     fetch_data,
     collection_csv,
-    collection_options,
+    collection_open_interest,
     collection_futures,
 )
 import pandas as pd
@@ -29,14 +29,6 @@ def get_csv_data():
     else:
         return jsonify({"message": "Nenhum dado encontrado na coleção CSV."}), 404
 
-@app.route('/api/options_data', methods=['GET'])
-def get_options_data():
-    df_options = fetch_data(collection_options)
-    if not df_options.empty:
-        data = df_options.to_dict(orient='records')
-        return jsonify(data)
-    else:
-        return jsonify({"message": "Nenhum dado encontrado na coleção de opções."}), 404
 
 @app.route('/api/futures_data', methods=['GET'])
 def get_futures_data():
@@ -47,29 +39,4 @@ def get_futures_data():
     else:
         return jsonify({"message": "Nenhum dado encontrado na coleção de futuros."}), 404
 
-# Rota para buscar dados filtrados por parâmetros (exemplo)
-@app.route('/api/options_data/filter', methods=['GET'])
-def filter_options_data():
-    symbol = request.args.get('symbol')
-    start_time = request.args.get('start_time')  # Espera timestamp em milissegundos
-    end_time = request.args.get('end_time')      # Espera timestamp em milissegundos
 
-    df_options = fetch_data(collection_options)
-
-    if df_options.empty:
-        return jsonify({"message": "Nenhum dado encontrado na coleção de opções."}), 404
-
-    if symbol:
-        df_options = df_options[df_options['symbol'] == symbol]
-
-    if start_time:
-        df_options = df_options[df_options['time'] >= pd.to_datetime(int(start_time), unit='ms')]
-
-    if end_time:
-        df_options = df_options[df_options['time'] <= pd.to_datetime(int(end_time), unit='ms')]
-
-    if df_options.empty:
-        return jsonify({"message": "Nenhum dado encontrado com os critérios fornecidos."}), 404
-
-    data = df_options.to_dict(orient='records')
-    return jsonify(data)

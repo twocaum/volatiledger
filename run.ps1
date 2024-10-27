@@ -10,6 +10,7 @@ docker ps | Select-String -Pattern mongodb_container
 # Instalar dependências do Python
 Write-Output "Instalando dependências do Python..."
 pip install -r requirements.txt
+pip install binance-futures-connector
 
 # Executar o script Python do API client
 Write-Output "Executando o API client..."
