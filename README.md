@@ -1,6 +1,6 @@
 # Volatiledger
 
-Este projeto contém um script Python que coleta e salva dados de opções da Binance usando a API e armazena os resultados em um banco de dados MongoDB. O script utiliza variáveis de ambiente para configurar credenciais de acesso e a chave da API.
+Este projeto agora está estruturado de forma modular, separando responsabilidades em diferentes arquivos para melhorar a manutenção e a organização do código. Temos um script que coleta e salva dados de opções da Binance usando a API, armazenando os resultados em um banco de dados MongoDB, bem como uma interface de dashboard para visualizar esses dados.
 
 ## Requisitos
 
@@ -47,7 +47,7 @@ Para construir a imagem Docker do MongoDB personalizada, execute:
 
 ### Executar o Projeto
 
-Para executar o container MongoDB e o script Python, utilize:
+Para executar o container MongoDB e o projeto, utilize:
 ```bash
 .\run.ps1
 ```
@@ -59,39 +59,40 @@ Ou, em sistemas Unix:
 
 ## Uso
 
-Para executar o script manualmente, certifique-se de que o MongoDB esteja em execução e depois execute:
+O projeto está dividido em diferentes componentes:
 
+### API para Coleta e Processamento de Dados
+
+- `api/api_client.py`: Coleta e salva os dados de opções e futuros da Binance no MongoDB.
+- `api.py`: API Flask que fornece endpoints para acessar os dados armazenados, incluindo um endpoint para baixar o CSV completo.
+- `utils.py`: Funções auxiliares para conectar ao MongoDB, processar dados e coletar informações da Binance.
+
+Para executar a coleta de dados e a API:
 ```bash
 python api/api_client.py
 ```
 
-O script irá buscar dados de opções da Binance a partir da data inicial especificada e armazená-los no banco de dados MongoDB.
+### Dashboard para Visualização dos Dados
 
-### Uso do CSV
+- `dash_app.py`: Aplicação Dash para visualização dos dados de opções e futuros da Binance.
+- `main.py`: Ponto de entrada para iniciar a aplicação Dash.
 
-Além da coleta de dados da API da Binance, o projeto permite importar dados de um arquivo CSV. Para isso, certifique-se de que o arquivo `dados_completos.csv` esteja no caminho correto.
-
-- O script irá detectar automaticamente o arquivo CSV e carregar os dados no MongoDB.
-- Caso o arquivo CSV seja encontrado, ele será lido e os dados serão inseridos na coleção `options_chain` do banco de dados `binance_data`.
-- O script está preparado para lidar com possíveis erros no formato do CSV, como problemas na conversão de datas ou ausência de colunas esperadas, e registrará esses erros no log.
-- Também é possível acessar o CSV completo e agregados através da API Flask integrada.
-
-Para executar o script com o CSV:
+Para executar o dashboard:
 ```bash
-python api/api_client.py
+python main.py
 ```
-
-Certifique-se de que o arquivo CSV esteja disponível na raiz do projeto ou atualize o caminho no script, se necessário.
 
 ## Estrutura do Projeto
 
-- `api/api_client.py`: Script principal que coleta e salva os dados.
+- `api/`: Diretório contendo os scripts da API e do cliente.
+  - `api_client.py`: Script principal que coleta e salva os dados no MongoDB.
+  - `api.py`: API Flask para servir os dados.
+- `dash_app.py`: Aplicação Dash para visualização dos dados.
+- `utils.py`: Funções utilitárias, como conexão com o MongoDB e processamento de dados.
 - `requirements.txt`: Lista de dependências do projeto.
 - `.env`: Arquivo contendo variáveis de ambiente (não incluído no repositório).
-- `build.ps1`: Script PowerShell para construir a imagem Docker do MongoDB.
-- `build.sh`: Script PowerShell para construir a imagem Docker do MongoDB em sistemas Unix.
-- `run.ps1`: Script PowerShell para executar o container MongoDB e o script Python.
-- `run.sh`: Script Bash para executar o container MongoDB e o script Python em sistemas Unix.
+- `build.ps1` / `run.ps1`: Scripts PowerShell para construção e execução em sistemas Windows.
+- `build.sh` / `run.sh`: Scripts Bash para construção e execução em sistemas Unix.
 
 ## Observações
 
@@ -99,13 +100,6 @@ Certifique-se de que o arquivo CSV esteja disponível na raiz do projeto ou atua
 - A chave da API deve ser válida para acessar os dados da Binance.
 - Respeite os limites de taxa da API da Binance, fazendo ajustes no tempo de espera (`time.sleep`) se necessário.
 - Caso utilize o CSV, verifique se ele está no formato esperado para evitar erros na inserção dos dados.
-- A API Flask pode ser utilizada para baixar o CSV completo, acessando o endpoint `/api/dados_completos`.
-
-## Problemas Comuns
-
-- **Erro de Autenticação**: Verifique se a chave da API está correta e se tem as permissões necessárias.
-- **Conexão com MongoDB**: Verifique se o MongoDB está em execução e se a URI está correta.
-- **Problemas com o CSV**: Certifique-se de que o arquivo CSV está no local correto e que possui as colunas esperadas, como `time` e `price`.
 
 ## Licença
 
