@@ -26,6 +26,7 @@ client = MongoClient(MONGO_URI)
 db = client['binance_data']
 collection_csv = db['csv_data']
 collection_options = db['options_data']
+collection_futures = db['futures_data']  # Nova coleção para dados de futuros
 
 # Caminho para o arquivo CSV relativo à localização do script
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -89,40 +90,45 @@ def download_and_save_btcusd(symbol, start_time, end_time, limit=1000):
         print(f"Error downloading or saving data: {e}")
 
 def get_all_option_symbols():
-    url = 'https://api.binance.com/api/v3/exchangeInfo'  # URL correta para exchangeInfo
+    url = 'https://eapi.binance.com/eapi/v1/exchangeInfo'  # Endpoint correto para opções
     try:
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        
+
         # Inspecionar as chaves disponíveis na resposta
         print("Chaves na resposta da API exchangeInfo:", data.keys())
-        
-        # Inspecionar o primeiro símbolo para entender a estrutura
-        if data['symbols']:
-            print("Primeiro símbolo:", data['symbols'][0])
-        
-        # Verificar se 'optionSymbols' está presente
-        if 'optionSymbols' in data:
-            symbols = [s['symbol'] for s in data['optionSymbols']]
-            print(f"Encontrados {len(symbols)} símbolos de opções via 'optionSymbols'")
+
+        # Extrair os símbolos de opções
+        if 'symbols' in data:
+            symbols = [s['symbol'] for s in data['symbols']]
+            print(f"Encontrados {len(symbols)} símbolos de opções.")
         else:
-            # Alternativa: Filtrar símbolos que possuam alguma característica específica
-            # Ajuste o critério de filtragem conforme necessário
-            # Exemplo: Se símbolos de opções contiverem 'OPTION' no nome
-            symbols = [s['symbol'] for s in data['symbols'] if 'OPTION' in s['symbol'].upper()]
-            if symbols:
-                print(f"Encontrados {len(symbols)} símbolos de opções filtrados pelo nome.")
-            else:
-                print("Nenhum símbolo de opção encontrado na resposta da API.")
-        
+            print("Nenhum símbolo de opção encontrado na resposta da API.")
+            symbols = []
+
         return symbols
     except requests.exceptions.RequestException as e:
-        print(f"Erro ao obter informações de troca: {e}")
+        print(f"Erro ao obter informações de opções: {e}")
         return []
     except KeyError as e:
         print(f"Chave inesperada na resposta da API: {e}")
         return []
+
+def process_options_data(data):
+    if data is None:
+        return None
+    df = pd.DataFrame(data)
+    numeric_columns = [
+        'markPrice', 'bidIV', 'askIV', 'markIV',
+        'delta', 'theta', 'gamma', 'vega',
+        'highPriceLimit', 'lowPriceLimit', 'riskFreeInterest'
+    ]
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    df['time'] = pd.Timestamp.now()
+    return df
 
 def fetch_option_data(symbol):
     url = 'https://eapi.binance.com/eapi/v1/mark'
@@ -144,16 +150,12 @@ def fetch_options_data_parallel():
         print("Nenhum símbolo de opção encontrado.")
         return None
 
-    # Limites de taxa da Binance
-    # Peso por requisição: 5
-    # Limite de peso por minuto: 1200
-    # Máximo de requisições por minuto: 240 (1200 / 5)
-    max_requests_per_minute = 240
-    request_weight = 5
-    weight_limit_per_minute = 1200
+    # Limites de taxa da Binance para opções
+    # Consulte a documentação para obter informações atualizadas sobre os limites de taxa
+    max_requests_per_minute = 1200  # Ajuste conforme necessário
+    batch_size = max_requests_per_minute
 
     # Dividir símbolos em lotes
-    batch_size = max_requests_per_minute
     symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
 
     try:
@@ -165,10 +167,7 @@ def fetch_options_data_parallel():
                     try:
                         data = future.result()
                         if data:
-                            if isinstance(data, list):
-                                data_list.extend(data)
-                            else:
-                                data_list.append(data)
+                            data_list.append(data)
                     except Exception as exc:
                         print(f"Símbolo {symbol} gerou uma exceção: {exc}")
             # Esperar 60 segundos entre os lotes para respeitar o limite de taxa
@@ -181,15 +180,95 @@ def fetch_options_data_parallel():
 
     return data_list
 
-def process_options_data(data):
+def fetch_and_store_options_data():
+    global df_options
+    print("Iniciando coleta de dados de opções...")
+    options_data = fetch_options_data_parallel()
+    df_options = process_options_data(options_data)
+    if df_options is not None and not df_options.empty:
+        insert_data_into_mongo(df_options, collection_options)
+        print("Dados de opções atualizados.")
+    else:
+        print("DataFrame de opções está vazio ou não foi carregado corretamente.")
+
+def get_all_futures_symbols():
+    url = 'https://fapi.binance.com/fapi/v1/exchangeInfo'
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        # Inspecionar as chaves disponíveis na resposta
+        print("Chaves na resposta da API exchangeInfo:", data.keys())
+
+        # Extrair os símbolos de futuros
+        if 'symbols' in data:
+            symbols = [s['symbol'] for s in data['symbols']]
+            print(f"Encontrados {len(symbols)} símbolos de futuros.")
+        else:
+            print("Nenhum símbolo de futuros encontrado na resposta da API.")
+            symbols = []
+
+        return symbols
+    except requests.exceptions.RequestException as e:
+        print(f"Erro ao obter informações de futuros: {e}")
+        return []
+
+def fetch_future_data(symbol):
+    url = 'https://fapi.binance.com/fapi/v1/ticker/24hr'
+    params = {'symbol': symbol}
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return data
+    except requests.exceptions.RequestException as e:
+        print(f"Erro ao buscar dados para o símbolo {symbol}: {e}")
+        return None
+
+def fetch_futures_data_parallel():
+    symbols = get_all_futures_symbols()
+    data_list = []
+
+    if not symbols:
+        print("Nenhum símbolo de futuros encontrado.")
+        return None
+
+    # Limites de taxa da Binance para futuros
+    # Consulte a documentação para obter informações atualizadas sobre os limites de taxa
+    max_requests_per_minute = 1200  # Ajuste conforme necessário
+    batch_size = max_requests_per_minute
+
+    # Dividir símbolos em lotes
+    symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+
+    try:
+        for batch in symbol_batches:
+            with ThreadPoolExecutor(max_workers=100) as executor:
+                future_to_symbol = {executor.submit(fetch_future_data, symbol): symbol for symbol in batch}
+                for future in as_completed(future_to_symbol):
+                    symbol = future_to_symbol[future]
+                    try:
+                        data = future.result()
+                        if data:
+                            data_list.append(data)
+                    except Exception as exc:
+                        print(f"Símbolo {symbol} gerou uma exceção: {exc}")
+            # Esperar 60 segundos entre os lotes para respeitar o limite de taxa
+            if len(symbol_batches) > 1:
+                print("Esperando 60 segundos para respeitar o limite de taxa da API...")
+                time.sleep(60)
+    except Exception as e:
+        print(f"Erro ao buscar dados da API: {e}")
+        return None
+
+    return data_list
+
+def process_futures_data(data):
     if data is None:
         return None
     df = pd.DataFrame(data)
-    numeric_columns = [
-        'markPrice', 'bidIV', 'askIV', 'markIV',
-        'delta', 'theta', 'gamma', 'vega',
-        'highPriceLimit', 'lowPriceLimit', 'riskFreeInterest'
-    ]
+    numeric_columns = ['lastPrice', 'priceChangePercent', 'volume', 'openPrice', 'highPrice', 'lowPrice']
     for col in numeric_columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     df['time'] = pd.Timestamp.now()
@@ -234,17 +313,17 @@ def read_csv_file():
         print(f"Erro ao ler o arquivo CSV: {e}")
         return None
 
-
 # Variáveis globais para armazenar os DataFrames
 df_csv = pd.DataFrame()
 df_options = pd.DataFrame()
+df_futures = pd.DataFrame()
 df_daily = pd.DataFrame()
 
 # Criar visualização com Dash
 app_dash = dash.Dash(__name__, server=app, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
 def main():
-    global df_csv, df_options, df_daily
+    global df_csv, df_options, df_futures, df_daily
 
     # Processar e inserir dados do CSV
     if os.path.exists(csv_file_path):
@@ -276,6 +355,11 @@ def main():
     # Executar imediatamente na inicialização
     fetch_and_store_options_data()
 
+    # Iniciar o agendamento da coleta de dados de futuros
+    schedule.every(10).minutes.do(fetch_and_store_futures_data)
+    # Executar imediatamente na inicialização
+    fetch_and_store_futures_data()
+
     # Iniciar o agendador em uma thread separada
     scheduler_thread = threading.Thread(target=run_scheduler)
     scheduler_thread.daemon = True
@@ -284,6 +368,7 @@ def main():
     # Buscar dados do MongoDB e processar para Dash
     df_csv = fetch_data(collection_csv)
     df_options = fetch_data(collection_options)
+    df_futures = fetch_data(collection_futures)
 
     # Processar dados do CSV
     if not df_csv.empty and 'time' in df_csv.columns and 'price' in df_csv.columns:
@@ -311,22 +396,18 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(1)
 
-def fetch_and_store_options_data():
-    global df_options
-    print("Iniciando coleta de dados de opções...")
-    options_data = fetch_options_data_parallel()
-    df_options = process_options_data(options_data)
-    if df_options is not None and not df_options.empty:
-        insert_data_into_mongo(df_options, collection_options)
-        print("Dados de opções atualizados.")
+def fetch_and_store_futures_data():
+    global df_futures
+    print("Iniciando coleta de dados de futuros...")
+    futures_data = fetch_futures_data_parallel()
+    df_futures = process_futures_data(futures_data)
+    if df_futures is not None and not df_futures.empty:
+        insert_data_into_mongo(df_futures, collection_futures)
+        print("Dados de futuros atualizados.")
     else:
-        print("DataFrame de opções está vazio ou não foi carregado corretamente.")
+        print("DataFrame de futuros está vazio ou não foi carregado corretamente.")
 
-def run_dash():
-    # Esta função não é mais necessária, pois movemos a execução do Dash para o main
-    pass
-
-# Layout do Dash com abas para CSV e Dados de Opções
+# Layout do Dash com abas para CSV, Dados de Opções e Dados de Futuros
 app_dash.layout = dbc.Container([
     dbc.Row([
         dbc.Col(html.H1("Dashboard Binance Data", className="text-center my-4"), width=12)
@@ -336,6 +417,7 @@ app_dash.layout = dbc.Container([
             dcc.Tabs(id='tabs', value='tab-csv', children=[
                 dcc.Tab(label='Dados CSV', value='tab-csv'),
                 dcc.Tab(label='Dados de Opções', value='tab-options'),
+                dcc.Tab(label='Dados de Futuros', value='tab-futures'),
             ]),
             width=12
         )
@@ -351,6 +433,8 @@ def render_content(tab):
         return generate_csv_layout()
     elif tab == 'tab-options':
         return generate_options_layout()
+    elif tab == 'tab-futures':
+        return generate_futures_layout()
 
 def generate_csv_layout():
     if not df_daily.empty:
@@ -425,7 +509,7 @@ def generate_options_layout():
             dbc.Row([
                 dbc.Col(
                     dcc.Dropdown(
-                        id='symbol-dropdown',
+                        id='symbol-dropdown-options',
                         options=[{'label': sym, 'value': sym} for sym in symbols],
                         value=symbols[0],
                         placeholder="Selecione um símbolo de opção"
@@ -440,7 +524,7 @@ def generate_options_layout():
                 dbc.Col([
                     html.P("Selecione um intervalo de tempo:"),
                     dcc.DatePickerRange(
-                        id='date-picker-range',
+                        id='date-picker-range-options',
                         start_date=df_options['time'].min().date(),
                         end_date=df_options['time'].max().date()
                     )
@@ -450,6 +534,13 @@ def generate_options_layout():
                 dbc.Col(dcc.Graph(id='filtered-markIV-graph'), md=6),
                 dbc.Col(dcc.Graph(id='filtered-markPrice-graph'), md=6),
             ]),
+            # Botão de download dos dados de opções
+            dbc.Row([
+                dbc.Col([
+                    html.Button("Baixar Dados de Opções", id="btn-download-options", className="mt-3 btn btn-primary"),
+                    dcc.Download(id="download-options-csv")
+                ], width='auto'),
+            ], className="mt-3"),
         ], fluid=True)
     else:
         layout = dbc.Container([
@@ -459,11 +550,45 @@ def generate_options_layout():
         ], fluid=True)
     return layout
 
+def generate_futures_layout():
+    if not df_futures.empty and 'symbol' in df_futures.columns:
+        symbols = df_futures['symbol'].unique()
+        layout = dbc.Container([
+            dbc.Row([
+                dbc.Col(
+                    dcc.Dropdown(
+                        id='symbol-dropdown-futures',
+                        options=[{'label': sym, 'value': sym} for sym in symbols],
+                        value=symbols[0],
+                        placeholder="Selecione um símbolo de futuros"
+                    ), width=6
+                )
+            ], className="mb-4"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='lastPrice-graph'), md=6),
+                dbc.Col(dcc.Graph(id='volume-graph'), md=6),
+            ]),
+            # Botão de download dos dados de futuros
+            dbc.Row([
+                dbc.Col([
+                    html.Button("Baixar Dados de Futuros", id="btn-download-futures", className="mt-3 btn btn-primary"),
+                    dcc.Download(id="download-futures-csv")
+                ], width='auto'),
+            ], className="mt-3"),
+        ], fluid=True)
+    else:
+        layout = dbc.Container([
+            dbc.Row([
+                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados de futuros.", className="text-center"))
+            ])
+        ], fluid=True)
+    return layout
+
 # Callback para atualizar os gráficos das opções
 @app_dash.callback(
     [Output('markIV-graph', 'figure'),
      Output('markPrice-graph', 'figure')],
-    [Input('symbol-dropdown', 'value')]
+    [Input('symbol-dropdown-options', 'value')]
 )
 def update_options_graphs(selected_symbol):
     if selected_symbol:
@@ -488,13 +613,13 @@ def update_options_graphs(selected_symbol):
     else:
         return {}, {}
 
-# Callback para atualizar gráficos filtrados por data
+# Callback para atualizar gráficos filtrados por data (opções)
 @app_dash.callback(
     [Output('filtered-markIV-graph', 'figure'),
      Output('filtered-markPrice-graph', 'figure')],
-    [Input('symbol-dropdown', 'value'),
-     Input('date-picker-range', 'start_date'),
-     Input('date-picker-range', 'end_date')]
+    [Input('symbol-dropdown-options', 'value'),
+     Input('date-picker-range-options', 'start_date'),
+     Input('date-picker-range-options', 'end_date')]
 )
 def update_filtered_options_graphs(selected_symbol, start_date, end_date):
     if selected_symbol and start_date and end_date:
@@ -523,6 +648,59 @@ def update_filtered_options_graphs(selected_symbol, start_date, end_date):
         return fig_markIV, fig_markPrice
     else:
         return {}, {}
+
+# Callback para baixar o CSV de opções
+@app_dash.callback(
+    Output("download-options-csv", "data"),
+    Input("btn-download-options", "n_clicks"),
+    prevent_initial_call=True
+)
+def download_options_csv(n_clicks):
+    if not df_options.empty:
+        return dcc.send_data_frame(df_options.to_csv, "dados_opcoes.csv")
+    else:
+        return None
+
+# Callback para atualizar os gráficos dos futuros
+@app_dash.callback(
+    [Output('lastPrice-graph', 'figure'),
+     Output('volume-graph', 'figure')],
+    [Input('symbol-dropdown-futures', 'value')]
+)
+def update_futures_graphs(selected_symbol):
+    if selected_symbol:
+        filtered_df = df_futures[df_futures['symbol'] == selected_symbol]
+        fig_lastPrice = px.line(
+            filtered_df,
+            x='time',
+            y='lastPrice',
+            title=f'Último Preço para {selected_symbol}',
+            labels={'time': 'Tempo', 'lastPrice': 'Último Preço'},
+            markers=True
+        )
+        fig_volume = px.line(
+            filtered_df,
+            x='time',
+            y='volume',
+            title=f'Volume para {selected_symbol}',
+            labels={'time': 'Tempo', 'volume': 'Volume'},
+            markers=True
+        )
+        return fig_lastPrice, fig_volume
+    else:
+        return {}, {}
+
+# Callback para baixar o CSV de futuros
+@app_dash.callback(
+    Output("download-futures-csv", "data"),
+    Input("btn-download-futures", "n_clicks"),
+    prevent_initial_call=True
+)
+def download_futures_csv(n_clicks):
+    if not df_futures.empty:
+        return dcc.send_data_frame(df_futures.to_csv, "dados_futuros.csv")
+    else:
+        return None
 
 if __name__ == "__main__":
     main()
