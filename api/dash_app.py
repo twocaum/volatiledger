@@ -13,7 +13,7 @@ from utils import (
 import plotly.express as px
 from flask import Flask
 from api_client import app as flask_app  # Importa o app Flask do api.py
-
+import plotly.graph_objs as go
 # Create Dash app
 app_dash = dash.Dash(__name__, server=flask_app, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -173,40 +173,44 @@ def generate_historical_exercise_layout():
     Output('historical-exercise-graph', 'figure'),
     [Input('filter-strikeResult', 'value'), Input('date-picker', 'start_date'), Input('date-picker', 'end_date')]
 )
+
+
 def update_historical_exercise_graph(strike_result, start_date, end_date):
     df_filtered = df_historical_exercise.copy()
+    
+    # Apply filters
     if strike_result:
         df_filtered = df_filtered[df_filtered['strikeResult'] == strike_result]
     if start_date and end_date:
         df_filtered = df_filtered[(df_filtered['expiryDate'] >= start_date) & (df_filtered['expiryDate'] <= end_date)]
     
-    fig = px.scatter(
-        df_filtered,
-        x='strikePrice',
-        y='realStrikePrice',
-        color='strikeResult',
-        title='Strike Price vs Real Strike Price com Filtro',
-        labels={'strikePrice': 'Strike Price', 'realStrikePrice': 'Real Strike Price'}
-    )
-    
-    # Update layout for a clearer, lighter appearance
-    fig.update_layout(
-        plot_bgcolor="rgba(240, 240, 240, 0.5)",  # Light background
-        paper_bgcolor="rgba(255, 255, 255, 1)",   # White paper background
-        xaxis=dict(
-            showgrid=True,
-            gridcolor="rgba(200, 200, 200, 0.3)", # Light grid color
-            tickangle=-45  # Rotate x-axis labels for readability
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor="rgba(200, 200, 200, 0.3)", # Light grid color
-        ),
-    )
-    
-    # Update marker color and size for clarity
-    fig.update_traces(marker=dict(size=6, opacity=0.8, line=dict(width=0.5, color="DarkSlateGrey")))
+    # Aggregate data for candlestick chart
+    df_candlestick = df_filtered.groupby(df_filtered['expiryDate'].dt.date).agg(
+        open_price=('realStrikePrice', 'first'),
+        high_price=('realStrikePrice', 'max'),
+        low_price=('realStrikePrice', 'min'),
+        close_price=('realStrikePrice', 'last')
+    ).reset_index()
 
+    # Create candlestick chart
+    fig = go.Figure(data=[go.Candlestick(
+        x=df_candlestick['expiryDate'],
+        open=df_candlestick['open_price'],
+        high=df_candlestick['high_price'],
+        low=df_candlestick['low_price'],
+        close=df_candlestick['close_price'],
+        increasing_line_color='green', decreasing_line_color='red'
+    )])
+
+    # Update layout for better visualization
+    fig.update_layout(
+        title="Real Strike Price Candlestick Chart Over Time",
+        xaxis_title="Date",
+        yaxis_title="Real Strike Price",
+        plot_bgcolor="rgba(240, 240, 240, 0.5)",
+        paper_bgcolor="rgba(255, 255, 255, 1)"
+    )
+    
     return fig
 
 
