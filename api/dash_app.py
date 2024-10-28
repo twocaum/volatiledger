@@ -8,65 +8,47 @@ import pandas as pd
 from utils import (
     fetch_data,
     collection_csv,
-    collection_open_interest,
-    collection_futures,
+    collection_historical_exercise,
 )
 import plotly.express as px
 from flask import Flask
 from api_client import app as flask_app  # Importa o app Flask do api.py
 
-# Criar visualização com Dash
+# Create Dash app
 app_dash = dash.Dash(__name__, server=flask_app, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-# Variáveis globais para armazenar os DataFrames
+# Global variables for DataFrames
 df_csv = pd.DataFrame()
-df_open_interest = pd.DataFrame()
-df_futures = pd.DataFrame()
+df_historical_exercise = pd.DataFrame()
 df_daily = pd.DataFrame()
 
-# Função para carregar e processar os dados
+# Load and process data
 def load_data():
-    global df_csv, df_open_interest, df_futures, df_daily
-
-    # Carregar dados do MongoDB
+    global df_csv, df_historical_exercise, df_daily
     df_csv = fetch_data(collection_csv)
-    df_open_interest = fetch_data(collection_open_interest)
-    df_futures = fetch_data(collection_futures)
+    df_historical_exercise = fetch_data(collection_historical_exercise)
 
-    # Processar dados do CSV
     if not df_csv.empty and 'time' in df_csv.columns and 'price' in df_csv.columns:
         df_csv['price'] = pd.to_numeric(df_csv['price'], errors='coerce')
         df_csv['quantity'] = pd.to_numeric(df_csv['quantity'], errors='coerce')
         df_csv['time'] = pd.to_datetime(df_csv['time'], unit='ms')
         df_csv.set_index('time', inplace=True)
-
-        # Filtrar apenas dados a partir de 2020
         df_csv = df_csv[df_csv.index >= "2020-01-01"]
 
-        # Resample semanal para reduzir a quantidade de pontos
         df_daily = df_csv.resample('W').agg({
             'price': ['mean', 'min', 'max'],
             'quantity': 'sum'
         }).reset_index()
-
-        # Ajustar o nome das colunas após a agregação
         df_daily.columns = ['time', 'price_mean', 'price_min', 'price_max', 'total_quantity']
     else:
         df_daily = pd.DataFrame()
 
-    # Processar dados de Open Interest, se necessário
-    if not df_open_interest.empty and 'timestamp' in df_open_interest.columns:
-        df_open_interest['timestamp'] = pd.to_datetime(df_open_interest['timestamp'], errors='coerce')
+    if not df_historical_exercise.empty:
+        df_historical_exercise['expiryDate'] = pd.to_datetime(df_historical_exercise['expiryDate'], errors='coerce')
 
-    # Processar dados de futuros, se necessário
-    if not df_futures.empty and 'time' in df_futures.columns:
-        df_futures['time'] = pd.to_datetime(df_futures['time'], errors='coerce')
-
-
-# Carregar os dados na inicialização
 load_data()
 
-# Layout do Dash com abas para CSV, Dados de Open Interest e Dados de Futuros
+# Layout
 app_dash.layout = dbc.Container([
     dbc.Row([
         dbc.Col(html.H1("Dashboard Binance Data", className="text-center my-4"), width=12)
@@ -75,72 +57,42 @@ app_dash.layout = dbc.Container([
         dbc.Col(
             dcc.Tabs(id='tabs', value='tab-csv', children=[
                 dcc.Tab(label='Dados CSV', value='tab-csv'),
-                dcc.Tab(label='Dados de Open Interest', value='tab-open-interest'),
-                dcc.Tab(label='Dados de Futuros', value='tab-futures'),
+                dcc.Tab(label='Historical Exercise Records', value='tab-historical-exercise'),
             ]),
             width=12
         )
     ]),
     html.Div(id='tabs-content'),
-    # Componente Interval para atualizar os dados periodicamente
     dcc.Interval(
         id='interval-component',
-        interval=10*60*1000,  # Atualiza a cada 10 minutos
+        interval=10*60*1000,  # Update every 10 minutes
         n_intervals=0
     ),
     html.Div(id='dummy-output', style={'display': 'none'})
 ], fluid=True)
 
-# Callback para renderizar o conteúdo com base na aba selecionada
-@app_dash.callback(Output('tabs-content', 'children'),
-                   [Input('tabs', 'value')])
+@app_dash.callback(Output('tabs-content', 'children'), [Input('tabs', 'value')])
 def render_content(tab):
     if tab == 'tab-csv':
         return generate_csv_layout()
-    elif tab == 'tab-open-interest':
-        return generate_open_interest_layout()
-    elif tab == 'tab-futures':
-        return generate_futures_layout()
+    elif tab == 'tab-historical-exercise':
+        return generate_historical_exercise_layout()
 
 def generate_csv_layout():
     if not df_daily.empty:
-        # Gráficos para os dados do CSV
-        fig_mean = px.line(
-            df_daily,
-            x='time',
-            y='price_mean',
-            title='Preço Médio Diário ao Longo do Tempo',
-            labels={'time': 'Data', 'price_mean': 'Preço Médio (USD)'},
-            markers=True
-        )
-
-        fig_min_max = px.line(
-            df_daily,
-            x='time',
-            y=['price_min', 'price_max'],
-            title='Preços Mínimo e Máximo Diários ao Longo do Tempo',
-            labels={'time': 'Data', 'value': 'Preço (USD)', 'variable': 'Tipo'},
-            markers=True
-        )
-
-        fig_quantity = px.bar(
-            df_daily,
-            x='time',
-            y='total_quantity',
-            title='Quantidade Total Diária de Transações',
-            labels={'time': 'Data', 'total_quantity': 'Quantidade Total'},
-        )
+        fig_mean = px.line(df_daily, x='time', y='price_mean', title='Preço Médio Diário ao Longo do Tempo',
+                           labels={'time': 'Data', 'price_mean': 'Preço Médio (USD)'}, markers=True)
+        fig_min_max = px.line(df_daily, x='time', y=['price_min', 'price_max'],
+                              title='Preços Mínimo e Máximo Diários ao Longo do Tempo',
+                              labels={'time': 'Data', 'value': 'Preço (USD)', 'variable': 'Tipo'}, markers=True)
+        fig_quantity = px.bar(df_daily, x='time', y='total_quantity',
+                              title='Quantidade Total Diária de Transações',
+                              labels={'time': 'Data', 'total_quantity': 'Quantidade Total'})
 
         layout = dbc.Container([
-            dbc.Row([
-                dbc.Col(dcc.Graph(id='mean-price', figure=fig_mean), md=12)
-            ]),
-            dbc.Row([
-                dbc.Col(dcc.Graph(id='min-max-price', figure=fig_min_max), md=12)
-            ]),
-            dbc.Row([
-                dbc.Col(dcc.Graph(id='total-quantity', figure=fig_quantity), md=12)
-            ]),
+            dbc.Row([dbc.Col(dcc.Graph(id='mean-price', figure=fig_mean), md=12)]),
+            dbc.Row([dbc.Col(dcc.Graph(id='min-max-price', figure=fig_min_max), md=12)]),
+            dbc.Row([dbc.Col(dcc.Graph(id='total-quantity', figure=fig_quantity), md=12)]),
             dbc.Row([
                 dbc.Col([
                     html.Button("Baixar CSV Agregado", id="btn-download-aggregated", className="mt-3 btn btn-primary"),
@@ -152,14 +104,9 @@ def generate_csv_layout():
             ], className="mt-3")
         ], fluid=True)
     else:
-        layout = dbc.Container([
-            dbc.Row([
-                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados CSV.", className="text-center"))
-            ])
-        ], fluid=True)
+        layout = dbc.Container([dbc.Row([dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados CSV.", className="text-center"))])], fluid=True)
     return layout
 
-# Callback para baixar o CSV agregado
 @app_dash.callback(
     Output("download-dataframe-csv", "data"),
     Input("btn-download-aggregated", "n_clicks"),
@@ -170,133 +117,99 @@ def download_csv(n_clicks):
         return dcc.send_data_frame(df_daily.to_csv, "dados_resumidos.csv")
     else:
         return None
+    
 
-def generate_open_interest_layout():
-    if not df_open_interest.empty:
+# Download callback for Historical Exercise Records
+@app_dash.callback(
+    Output("download-historical-exercise-csv", "data"),
+    Input("btn-download-historical-exercise", "n_clicks"),
+    prevent_initial_call=True
+)
+def download_historical_exercise_csv(n_clicks):
+    if not df_historical_exercise.empty:
+        return dcc.send_data_frame(df_historical_exercise.to_csv, "dados_historical_exercise.csv")
+    else:
+        return None
+
+
+def generate_historical_exercise_layout():
+    if not df_historical_exercise.empty:
         layout = dbc.Container([
             dbc.Row([
-                dbc.Col(dcc.Graph(id='open-interest-graph'), md=12)
+                dbc.Col(dcc.Dropdown(
+                    id='filter-strikeResult',
+                    options=[{'label': res, 'value': res} for res in df_historical_exercise['strikeResult'].unique()],
+                    value=None,
+                    placeholder="Filtrar por Strike Result"
+                ), width=4),
+                dbc.Col(dcc.DatePickerRange(
+                    id='date-picker',
+                    min_date_allowed=df_historical_exercise['expiryDate'].min(),
+                    max_date_allowed=df_historical_exercise['expiryDate'].max(),
+                    start_date=df_historical_exercise['expiryDate'].min(),
+                    end_date=df_historical_exercise['expiryDate'].max()
+                ), width=8),
+            ], className="mb-4"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='historical-exercise-graph'), md=12)
             ]),
             dbc.Row([
                 dbc.Col([
-                    html.Button("Baixar Dados de Open Interest", id="btn-download-open-interest", className="mt-3 btn btn-primary"),
-                    dcc.Download(id="download-open-interest-csv")
+                    html.Button("Baixar Dados de Historical Exercise", id="btn-download-historical-exercise", className="mt-3 btn btn-primary"),
+                    dcc.Download(id="download-historical-exercise-csv")  # Ensure this component is here for download to work
                 ], width='auto'),
             ], className="mt-3"),
         ], fluid=True)
     else:
         layout = dbc.Container([
             dbc.Row([
-                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados de Open Interest.", className="text-center"))
+                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados de Historical Exercise Records.", className="text-center"))
             ])
         ], fluid=True)
     return layout
 
-# Callback para baixar o CSV de Open Interest
-@app_dash.callback(
-    Output("download-open-interest-csv", "data"),
-    Input("btn-download-open-interest", "n_clicks"),
-    prevent_initial_call=True
-)
-def download_open_interest_csv(n_clicks):
-    if not df_open_interest.empty:
-        return dcc.send_data_frame(df_open_interest.to_csv, "dados_open_interest.csv")
-    else:
-        return None
 
-def generate_futures_layout():
-    if not df_futures.empty and 'symbol' in df_futures.columns:
-        symbols = df_futures['symbol'].unique()
-        layout = dbc.Container([
-            dbc.Row([
-                dbc.Col(
-                    dcc.Dropdown(
-                        id='symbol-dropdown-futures',
-                        options=[{'label': sym, 'value': sym} for sym in symbols],
-                        value=symbols[0],
-                        placeholder="Selecione um símbolo de futuros"
-                    ), width=6
-                )
-            ], className="mb-4"),
-            dbc.Row([
-                dbc.Col(dcc.Graph(id='last-price-graph'), md=6),
-                dbc.Col(dcc.Graph(id='volume-graph'), md=6),
-            ]),
-            dbc.Row([
-                dbc.Col([
-                    html.Button("Baixar Dados de Futuros", id="btn-download-futures", className="mt-3 btn btn-primary"),
-                    dcc.Download(id="download-futures-csv")
-                ], width='auto')
-            ], className="mt-3"),
-        ], fluid=True)
-    else:
-        layout = dbc.Container([
-            dbc.Row([
-                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados de futuros.", className="text-center"))
-            ])
-        ], fluid=True)
-    return layout
-
-# Callback para atualizar os gráficos de futuros com base no símbolo selecionado
 @app_dash.callback(
-    [Output('last-price-graph', 'figure'), Output('volume-graph', 'figure')],
-    [Input('symbol-dropdown-futures', 'value')]
+    Output('historical-exercise-graph', 'figure'),
+    [Input('filter-strikeResult', 'value'), Input('date-picker', 'start_date'), Input('date-picker', 'end_date')]
 )
-def update_futures_graphs(selected_symbol):
-    # Filtrar os dados para o símbolo selecionado
-    df_filtered = df_futures[df_futures['symbol'] == selected_symbol]
+def update_historical_exercise_graph(strike_result, start_date, end_date):
+    df_filtered = df_historical_exercise.copy()
+    if strike_result:
+        df_filtered = df_filtered[df_filtered['strikeResult'] == strike_result]
+    if start_date and end_date:
+        df_filtered = df_filtered[(df_filtered['expiryDate'] >= start_date) & (df_filtered['expiryDate'] <= end_date)]
     
-    # Gráfico de Preço de Fechamento ao Longo do Tempo
-    fig_last_price = px.line(
+    fig = px.scatter(
         df_filtered,
-        x='time',
-        y='close',
-        title=f'Preço de Fechamento ao Longo do Tempo para {selected_symbol}',
-        labels={'time': 'Data', 'close': 'Preço de Fechamento (USD)'},
-        markers=True
+        x='strikePrice',
+        y='realStrikePrice',
+        color='strikeResult',
+        title='Strike Price vs Real Strike Price com Filtro',
+        labels={'strikePrice': 'Strike Price', 'realStrikePrice': 'Real Strike Price'}
     )
     
-    # Gráfico de Volume ao Longo do Tempo
-    fig_volume = px.bar(
-        df_filtered,
-        x='time',
-        y='volume',
-        title=f'Volume ao Longo do Tempo para {selected_symbol}',
-        labels={'time': 'Data', 'volume': 'Volume'},
+    # Update layout for a clearer, lighter appearance
+    fig.update_layout(
+        plot_bgcolor="rgba(240, 240, 240, 0.5)",  # Light background
+        paper_bgcolor="rgba(255, 255, 255, 1)",   # White paper background
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(200, 200, 200, 0.3)", # Light grid color
+            tickangle=-45  # Rotate x-axis labels for readability
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(200, 200, 200, 0.3)", # Light grid color
+        ),
     )
+    
+    # Update marker color and size for clarity
+    fig.update_traces(marker=dict(size=6, opacity=0.8, line=dict(width=0.5, color="DarkSlateGrey")))
 
-    return fig_last_price, fig_volume
-
-
-# Callback para atualizar os gráficos de Open Interest
-@app_dash.callback(
-    Output('open-interest-graph', 'figure'),
-    Input('interval-component', 'n_intervals')
-)
-def update_open_interest_graph(n_intervals):
-    fig = px.line(
-        df_open_interest,
-        x='timestamp',
-        y='sumOpenInterest',
-        title='Open Interest ao Longo do Tempo',
-        labels={'timestamp': 'Tempo', 'sumOpenInterest': 'Open Interest'},
-        markers=True
-    )
     return fig
 
-# Callback para baixar o CSV de futuros
-@app_dash.callback(
-    Output("download-futures-csv", "data"),
-    Input("btn-download-futures", "n_clicks"),
-    prevent_initial_call=True
-)
-def download_futures_csv(n_clicks):
-    if not df_futures.empty:
-        return dcc.send_data_frame(df_futures.to_csv, "dados_futuros.csv")
-    else:
-        return None
 
-# Callback para atualizar os dados periodicamente
 @app_dash.callback(
     Output('dummy-output', 'children'),
     Input('interval-component', 'n_intervals')

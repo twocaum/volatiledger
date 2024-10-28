@@ -6,8 +6,7 @@ from utils import csv_file_path
 from utils import (
     fetch_data,
     collection_csv,
-    collection_open_interest,
-    collection_futures,
+    collection_historical_exercise,
 )
 import pandas as pd
 
@@ -29,14 +28,11 @@ def get_csv_data():
     else:
         return jsonify({"message": "Nenhum dado encontrado na coleção CSV."}), 404
 
-
-@app.route('/api/futures_data', methods=['GET'])
-def get_futures_data():
-    df_futures = fetch_data(collection_futures)
-    if not df_futures.empty:
-        data = df_futures.to_dict(orient='records')
+@app.route('/api/historical_exercise_data', methods=['GET'])
+def get_historical_exercise_data():
+    df_historical_exercise = fetch_data(collection_historical_exercise)
+    if not df_historical_exercise.empty:
+        data = df_historical_exercise.to_dict(orient='records')
         return jsonify(data)
     else:
-        return jsonify({"message": "Nenhum dado encontrado na coleção de futuros."}), 404
-
-
+        return jsonify({"message": "Nenhum dado encontrado na coleção de Historical Exercise Records."}), 404
