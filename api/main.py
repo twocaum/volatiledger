@@ -37,27 +37,30 @@ def main():
     # Determine the start and end times for historical data collection
     latest_record = get_latest_record()
     if latest_record:
-        # Convert datetime to timestamp in milliseconds and add 1 ms
-        start_time = int(latest_record['time'].timestamp() * 1000) + 1
+        # Check if 'latest_record['time']' is a timestamp or datetime
+        if isinstance(latest_record['time'], datetime):
+            start_time = int(latest_record['time'].timestamp() * 1000) + 1
+        else:
+            start_time = int(latest_record['time']) + 1  # Assumes it's already in milliseconds
         print(f"Último registro encontrado. Iniciando coleta a partir de {start_time}.")
     else:
         # Default start date: January 1, 2024
-        start_time = int(datetime(2024, 1, 1).timestamp() * 1000)
-        print("Nenhum registro anterior encontrado. Iniciando coleta a partir de 2024-01-01.")
+        start_time = int(datetime(2020, 1, 1).timestamp() * 1000)
+        print("Nenhum registro anterior encontrado. Iniciando coleta a partir de 2020-01-01.")
 
     # End date: Current time
-    end_time = int(datetime(2024, 8, 1).timestamp() * 1000)
+    end_time = int(datetime(2023, 12, 31).timestamp() * 1000)
     print(f"Coletando dados até {end_time}.")
+
+    # Schedule data collection
+    schedule.every(1).minutes.do(fetch_and_store_historical_exercise_data, start_time, end_time)
+
+    # Run immediately on startup
+    fetch_and_store_historical_exercise_data(start_time, end_time)
 
     # Download historical data
     symbol = "BTCUSDT"
     download_and_save_btcusd(symbol, start_time, end_time)
-
-    # Schedule data collection
-    schedule.every(1).minutes.do(fetch_and_store_historical_exercise_data)
-    
-    # Run immediately on startup
-    fetch_and_store_historical_exercise_data()
 
     # Start the scheduler in a separate thread
     scheduler_thread = threading.Thread(target=run_scheduler)

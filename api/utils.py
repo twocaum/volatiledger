@@ -1,37 +1,50 @@
 import os
 import pandas as pd
-from pymongo import MongoClient
+from pymongo import ASCENDING, MongoClient
 from dotenv import load_dotenv
 from datetime import datetime
 import requests
 import logging
 
-# Configurar o logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 
-# Carregar variáveis de ambiente do arquivo .env
+# Load environment variables from .env file
 load_dotenv()
 
-# Chaves da API Binance a partir do .env
+# Binance API keys from .env
 BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
 BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
 
-# Definir a URI do MongoDB a partir do .env
+# MongoDB URI from .env
 MONGO_URI = os.getenv('MONGO_URI')
 
+# Define file paths and MongoDB client
 current_dir = os.path.dirname(os.path.abspath(__file__))
 csv_file_path = os.path.join(current_dir, 'dados_completos.csv')
-
-# Conectar ao MongoDB
 client = MongoClient(MONGO_URI)
 db = client['binance_data']
 
-# Coleções do MongoDB
+# MongoDB collections
 collection_csv = db['csv_data']
 collection_historical_exercise = db['historical_exercise_data']
 
+# Create indexes to optimize queries
+def create_indexes():
+    # Indexes for collection_csv
+    collection_csv.create_index([("time", ASCENDING)], name="idx_time")
+    collection_csv.create_index([("symbol", ASCENDING)], name="idx_symbol")
 
-# Função para inserir dados no MongoDB
+    # Indexes for collection_historical_exercise
+    collection_historical_exercise.create_index([("expiryDate", ASCENDING)], name="idx_expiryDate")
+    collection_historical_exercise.create_index([("symbol", ASCENDING)], name="idx_symbol")
+
+    logging.info("Indexes created for collections.")
+
+# Ensure indexes are created at script startup
+create_indexes()
+
+# Function to insert data into MongoDB in batches
 def insert_data_into_mongo(df, collection):
     try:
         if 'timestamp' in df.columns:
@@ -40,19 +53,19 @@ def insert_data_into_mongo(df, collection):
             df['time'] = pd.to_datetime(df['time'], errors='coerce')
         payload = df.to_dict(orient='records')
         if payload:
-            collection.insert_many(payload)
+            collection.insert_many(payload, ordered=False)
             logging.info(f"{len(payload)} records inserted into MongoDB successfully in collection '{collection.name}'.")
         else:
             logging.info("No records to insert.")
     except Exception as e:
         logging.error(f"Error inserting data into MongoDB: {e}")
 
-
-
+# Function to retrieve the latest record from collection_csv
 def get_latest_record():
-    latest_record = list(collection_csv.find().sort("time", -1).limit(1))
-    return latest_record[0] if latest_record else None
+    latest_record = collection_csv.find_one(sort=[("time", -1)])
+    return latest_record if latest_record else None
 
+# Function to download and save BTC/USD data from Binance API
 def download_and_save_btcusd(symbol, start_time, end_time, limit=1000):
     base_url = "https://api.binance.com/api/v3/aggTrades"
     try:
@@ -62,34 +75,31 @@ def download_and_save_btcusd(symbol, start_time, end_time, limit=1000):
             "endTime": end_time,
             "limit": limit
         }
-        data_fetched = True
-        while data_fetched:
+        while True:
             response = requests.get(base_url, params=params)
             if response.status_code == 200:
                 data = response.json()
-                if isinstance(data, list) and data:
-                    for trade in data:
-                        trade_data = {
-                            "symbol": symbol,
-                            "price": float(trade['p']),
-                            "time": int(trade['T']),
-                            "quantity": float(trade['q'])
-                        }
-                        try:
-                            collection_csv.insert_one(trade_data)
-                            logging.info(f"Inserted record for {datetime.fromtimestamp(trade_data['time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')} with price {trade_data['price']}")
-                        except Exception as e:
-                            logging.error(f"Error inserting data: {e}")
-                    last_time = data[-1]['T']
-                    params['startTime'] = last_time + 1  # Avoid duplicates
-                else:
-                    data_fetched = False
+                if not data:
+                    break  # Exit loop if there's no data
+
+                # Prepare and insert records in batches
+                records = [{
+                    "symbol": symbol,
+                    "price": float(trade['p']),
+                    "time": int(trade['T']),
+                    "quantity": float(trade['q'])
+                } for trade in data]
+                
+                insert_data_into_mongo(pd.DataFrame(records), collection_csv)
+                last_time = data[-1]['T']
+                params['startTime'] = last_time + 1  # Avoid duplicates
             else:
                 logging.error(f"Error downloading data: {response.status_code} - {response.text}")
-                data_fetched = False
+                break
     except Exception as e:
-        logging.error(f"Error downloading or saving data: {e}")
+        logging.error(f"Error in download_and_save_btcusd: {e}")
 
+# Function to fetch data from MongoDB and return it as a DataFrame
 def fetch_data(collection):
     cursor = collection.find()
     df = pd.DataFrame(list(cursor))
@@ -102,17 +112,8 @@ def fetch_data(collection):
             df.drop(columns=['_id'], inplace=True)
     return df
 
-# Função para coletar histórico de registros de exercícios
-# Function to fetch historical exercise records from Binance
-def fetch_historical_exercise_records(symbol="BTCUSDT", start_time=None, end_time=None, limit=5000):
-    """
-    Fetches historical exercise records for options from the Binance API.
-    Args:
-        symbol (str): Underlying symbol (e.g., "BTCUSDT").
-        start_time (int): Start time in milliseconds since epoch.
-        end_time (int): End time in milliseconds since epoch.
-        limit (int): Number of records to fetch.
-    """
+# Function to fetch historical exercise records from Binance API
+def fetch_historical_exercise_records(symbol="BTCUSDT", start_time=None, end_time=None, limit=1000):
     url = "https://eapi.binance.com/eapi/v1/exerciseHistory"
     headers = {
         "X-MBX-APIKEY": BINANCE_API_KEY,
@@ -136,25 +137,17 @@ def fetch_historical_exercise_records(symbol="BTCUSDT", start_time=None, end_tim
 
         # Convert data to DataFrame
         df = pd.DataFrame(data)
-        if not df.empty:
-            return df
-        else:
-            logging.info("No historical exercise records found.")
-            return None
+        return df if not df.empty else None
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching historical exercise records: {e}")
         return None
 
-
-
 # Function to fetch and store historical exercise records in MongoDB
-def fetch_and_store_historical_exercise_data():
+def fetch_and_store_historical_exercise_data(start_time=int(datetime(2020, 1, 1).timestamp() * 1000), 
+                                             end_time=int(datetime(2023, 12, 31).timestamp() * 1000)):
     logging.info("Starting Historical Exercise Records data collection...")
     
-    # Define start and end times (replace with appropriate timestamps as needed)
-    start_time = int(datetime(2024, 1, 1).timestamp() * 1000)
-    end_time = int(datetime.now().timestamp() * 1000)
-
+    # Fetch data within defined start and end times
     df_historical_exercise = fetch_historical_exercise_records(start_time=start_time, end_time=end_time)
     if df_historical_exercise is not None and not df_historical_exercise.empty:
         insert_data_into_mongo(df_historical_exercise, collection_historical_exercise)
@@ -162,7 +155,7 @@ def fetch_and_store_historical_exercise_data():
     else:
         logging.info("Historical Exercise Records DataFrame is empty or not loaded correctly.")
 
-
+# Function to read CSV file into a DataFrame
 def read_csv_file():
     try:
         logging.info(f"Reading CSV file from path: {csv_file_path}")
