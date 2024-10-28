@@ -13,6 +13,7 @@ import schedule
 import time
 import os
 from datetime import datetime
+import logging
 
 def load_csv_once():
     # Check if the CSV data is already in MongoDB
@@ -30,21 +31,48 @@ def load_csv_once():
     else:
         print("Coleção 'csv_data' já possui dados. Pulando carregamento do CSV.")
 
+def start_dash_server():
+    """Run the Dash server in a separate thread."""
+    app_dash.run_server(debug=False, host='127.0.0.1', port=8050)
+
 def main():
+    
+
     # Load CSV data only once if not already in MongoDB
     load_csv_once()
 
+    # Start the Dash server in a separate thread at the beginning
+    dash_thread = threading.Thread(target=start_dash_server)
+    dash_thread.daemon = True
+    dash_thread.start()
+    print("Dash server started in a separate thread.")
+
     # Determine the start and end times for historical data collection
     latest_record = get_latest_record()
-    if latest_record:
-        # Check if 'latest_record['time']' is a timestamp or datetime
-        if isinstance(latest_record['time'], datetime):
-            start_time = int(latest_record['time'].timestamp() * 1000) + 1
-        else:
-            start_time = int(latest_record['time']) + 1  # Assumes it's already in milliseconds
-        print(f"Último registro encontrado. Iniciando coleta a partir de {start_time}.")
+    if latest_record and 'time' in latest_record:
+        # Extract and validate the 'time' field
+        record_time = latest_record['time']
+        try:
+            # Check if record_time is a datetime, or try to convert it
+            if isinstance(record_time, datetime):
+                start_time = int(record_time.timestamp() * 1000) + 1
+            elif isinstance(record_time, (int, float)):
+                # Assume it's already a timestamp in milliseconds
+                start_time = int(record_time) + 1
+            else:
+                # Attempt to parse if it's a string
+                record_time = pd.to_datetime(record_time, errors='coerce')
+                if pd.notnull(record_time):
+                    start_time = int(record_time.timestamp() * 1000) + 1
+                else:
+                    raise ValueError("Invalid 'time' format in latest_record")
+            print(f"Último registro encontrado. Iniciando coleta a partir de {start_time}.")
+        except (OSError, ValueError) as e:
+            # Log the error and default to a known start time
+            logging.error(f"Error processing 'time' in latest_record: {e}. Using default start time.")
+            start_time = int(datetime(2020, 1, 1).timestamp() * 1000)
     else:
-        # Default start date: January 1, 2024
+        # Default start date: January 1, 2020
         start_time = int(datetime(2020, 1, 1).timestamp() * 1000)
         print("Nenhum registro anterior encontrado. Iniciando coleta a partir de 2020-01-01.")
 
@@ -67,8 +95,9 @@ def main():
     scheduler_thread.daemon = True
     scheduler_thread.start()
 
-    # Start the Dash server
-    app_dash.run_server(debug=True, host='127.0.0.1', port=8050)
+    # Keep the main thread alive
+    while True:
+        time.sleep(1)
 
 def run_scheduler():
     while True:

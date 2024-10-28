@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import requests
 import logging
+from time import sleep
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,20 +32,15 @@ collection_historical_exercise = db['historical_exercise_data']
 
 # Create indexes to optimize queries
 def create_indexes():
-    # Indexes for collection_csv
     collection_csv.create_index([("time", ASCENDING)], name="idx_time")
     collection_csv.create_index([("symbol", ASCENDING)], name="idx_symbol")
-
-    # Indexes for collection_historical_exercise
     collection_historical_exercise.create_index([("expiryDate", ASCENDING)], name="idx_expiryDate")
     collection_historical_exercise.create_index([("symbol", ASCENDING)], name="idx_symbol")
-
     logging.info("Indexes created for collections.")
 
 # Ensure indexes are created at script startup
 create_indexes()
 
-# Function to insert data into MongoDB in batches
 def insert_data_into_mongo(df, collection):
     try:
         if 'timestamp' in df.columns:
@@ -54,117 +50,114 @@ def insert_data_into_mongo(df, collection):
         payload = df.to_dict(orient='records')
         if payload:
             collection.insert_many(payload, ordered=False)
-            logging.info(f"{len(payload)} records inserted into MongoDB successfully in collection '{collection.name}'.")
+            logging.info(f"{len(payload)} records inserted into '{collection.name}' collection.")
         else:
             logging.info("No records to insert.")
     except Exception as e:
         logging.error(f"Error inserting data into MongoDB: {e}")
 
-# Function to retrieve the latest record from collection_csv
 def get_latest_record():
-    latest_record = collection_csv.find_one(sort=[("time", -1)])
-    return latest_record if latest_record else None
+    return collection_csv.find_one(sort=[("time", -1)])
 
-# Function to download and save BTC/USD data from Binance API
 def download_and_save_btcusd(symbol, start_time, end_time, limit=1000):
     base_url = "https://api.binance.com/api/v3/aggTrades"
+    params = {"symbol": symbol, "startTime": start_time, "endTime": end_time, "limit": limit}
     try:
-        params = {
-            "symbol": symbol,
-            "startTime": start_time,
-            "endTime": end_time,
-            "limit": limit
-        }
         while True:
             response = requests.get(base_url, params=params)
             if response.status_code == 200:
                 data = response.json()
                 if not data:
-                    break  # Exit loop if there's no data
-
-                # Prepare and insert records in batches
-                records = [{
-                    "symbol": symbol,
-                    "price": float(trade['p']),
-                    "time": int(trade['T']),
-                    "quantity": float(trade['q'])
-                } for trade in data]
-                
+                    logging.info("No more BTC/USD data to download.")
+                    break
+                records = [{"symbol": symbol, "price": float(trade['p']), "time": int(trade['T']), "quantity": float(trade['q'])} for trade in data]
                 insert_data_into_mongo(pd.DataFrame(records), collection_csv)
-                last_time = data[-1]['T']
-                params['startTime'] = last_time + 1  # Avoid duplicates
+                params['startTime'] = data[-1]['T'] + 1
+            elif response.status_code == 429:
+                logging.warning("Rate limit exceeded. Waiting before retry...")
+                sleep(60)  # Sleep for a minute if rate limited
             else:
                 logging.error(f"Error downloading data: {response.status_code} - {response.text}")
                 break
     except Exception as e:
         logging.error(f"Error in download_and_save_btcusd: {e}")
 
-# Function to fetch data from MongoDB and return it as a DataFrame
 def fetch_data(collection):
     cursor = collection.find()
     df = pd.DataFrame(list(cursor))
     if df.empty:
-        logging.info(f"No data found in collection '{collection.name}' in MongoDB")
+        logging.info(f"No data found in '{collection.name}' collection.")
     else:
         if 'time' in df.columns:
-            df['time'] = pd.to_datetime(df['time'], errors='coerce')
-        if '_id' in df.columns:
-            df.drop(columns=['_id'], inplace=True)
+            df['time'] = pd.to_datetime(df['time'], unit='ms', errors='coerce')
+            df.set_index('time', inplace=True)
+        df.drop(columns=['_id'], inplace=True, errors='ignore')
     return df
 
-# Function to fetch historical exercise records from Binance API
+def resample_daily(df):
+    if df.empty:
+        logging.warning("DataFrame is empty. Cannot resample.")
+        return pd.DataFrame()
+    
+    try:
+        # Resample data daily
+        df_daily = df.resample('D').agg({
+            'price': ['mean', 'min', 'max'],
+            'quantity': 'sum'
+        }).reset_index()
+        
+        # Flatten MultiIndex columns
+        df_daily.columns = ['time', 'price_mean', 'price_min', 'price_max', 'total_quantity']
+        logging.info(f"Daily resampled data:\n{df_daily.head()}")
+        return df_daily
+    except Exception as e:
+        logging.error(f"Error resampling data: {e}")
+        return pd.DataFrame()
+
 def fetch_historical_exercise_records(symbol="BTCUSDT", start_time=None, end_time=None, limit=1000):
     url = "https://eapi.binance.com/eapi/v1/exerciseHistory"
-    headers = {
-        "X-MBX-APIKEY": BINANCE_API_KEY,
-    }
-    params = {
-        "underlying": symbol,
-        "startTime": start_time,
-        "endTime": end_time,
-        "limit": limit
-    }
-
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
+    params = {"underlying": symbol, "startTime": start_time, "endTime": end_time, "limit": limit}
     try:
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
         data = response.json()
-
-        # Log and process each record
-        for record in data:
-            record['expiryDate'] = datetime.fromtimestamp(record['expiryDate'] / 1000)  # Convert timestamp
-            logging.info(f"Fetched record for {record['symbol']} with strike result {record['strikeResult']}")
-
-        # Convert data to DataFrame
-        df = pd.DataFrame(data)
-        return df if not df.empty else None
+        if data:
+            for record in data:
+                record['expiryDate'] = datetime.fromtimestamp(record['expiryDate'] / 1000)
+            return pd.DataFrame(data)
+        else:
+            logging.info("No historical exercise records found.")
+            return pd.DataFrame()
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching historical exercise records: {e}")
-        return None
+        return pd.DataFrame()
 
-# Function to fetch and store historical exercise records in MongoDB
-def fetch_and_store_historical_exercise_data(start_time=int(datetime(2020, 1, 1).timestamp() * 1000), 
-                                             end_time=int(datetime(2023, 12, 31).timestamp() * 1000)):
+def fetch_and_store_historical_exercise_data(start_time=None, end_time=None):
+    start_time = start_time or int(datetime(2024, 1, 1).timestamp() * 1000)
+    end_time = end_time or int(datetime.now().timestamp() * 1000)
     logging.info("Starting Historical Exercise Records data collection...")
-    
-    # Fetch data within defined start and end times
     df_historical_exercise = fetch_historical_exercise_records(start_time=start_time, end_time=end_time)
-    if df_historical_exercise is not None and not df_historical_exercise.empty:
+    if not df_historical_exercise.empty:
         insert_data_into_mongo(df_historical_exercise, collection_historical_exercise)
-        logging.info("Historical Exercise Records data updated.")
     else:
         logging.info("Historical Exercise Records DataFrame is empty or not loaded correctly.")
 
-# Function to read CSV file into a DataFrame
 def read_csv_file():
     try:
         logging.info(f"Reading CSV file from path: {csv_file_path}")
-        df = pd.read_csv(csv_file_path)
-        logging.info("CSV read successfully.")
-        return df
+        return pd.read_csv(csv_file_path)
     except FileNotFoundError:
         logging.error(f"File {csv_file_path} not found.")
-        return None
+        return pd.DataFrame()
     except Exception as e:
         logging.error(f"Error reading CSV file: {e}")
-        return None
+        return pd.DataFrame()
+
+# Load initial data and resample it
+df_csv = fetch_data(collection_csv)
+if not df_csv.empty and isinstance(df_csv.index, pd.DatetimeIndex):
+    logging.info("DatetimeIndex is set correctly.")
+    df_daily = resample_daily(df_csv)
+else:
+    logging.warning("The 'time' column could not be converted to a DateTimeIndex or data is empty.")

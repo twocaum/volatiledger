@@ -16,18 +16,37 @@ if (Test-Path .env) {
     exit
 }
 
+# Verificar se a rede Docker existe, senão criar
+if (-not (docker network ls --format "{{.Name}}" | Select-String -Pattern "^mongo-network$")) {
+    Write-Output "Criando rede mongo-network..."
+    docker network create mongo-network
+} else {
+    Write-Output "Rede mongo-network já existe."
+}
+
 # Construir a imagem Docker a partir do Dockerfile
-Write-Output "Construindo a imagem Docker..."
+Write-Output "Construindo a imagem Docker do MongoDB..."
 docker build -t mongodb_custom .
 
-# Verificar se já existe um contêiner com o mesmo nome e removê-lo (caso exista)
-if (docker ps -a --format "{{.Names}}" | Select-String -Pattern mongodb_container) {
-    Write-Output "Removendo contêiner existente..."
+# Verificar se já existe um contêiner MongoDB com o mesmo nome e removê-lo (caso exista)
+if (docker ps -a --format "{{.Names}}" | Select-String -Pattern "^mongodb_container$") {
+    Write-Output "Removendo contêiner MongoDB existente..."
     docker rm -f mongodb_container
 }
 
+# Verificar se já existe um contêiner Mongo-Express com o mesmo nome e removê-lo (caso exista)
+if (docker ps -a --format "{{.Names}}" | Select-String -Pattern "^mongoexpress$") {
+    Write-Output "Removendo contêiner Mongo-Express existente..."
+    docker rm -f mongoexpress
+}
+
 # Instalar dependências do Python
-Write-Output "Instalando dependências do Python..."
-pip install -r requirements.txt
+if (Test-Path requirements.txt) {
+    Write-Output "Instalando dependências do Python..."
+    pip install -r requirements.txt
+    pip install binance-futures-connector
+} else {
+    Write-Output "Arquivo requirements.txt não encontrado. Verifique o caminho e tente novamente."
+}
 
 Write-Output "Construção e configuração concluídas com sucesso."
