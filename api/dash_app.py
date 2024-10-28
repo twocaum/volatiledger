@@ -24,50 +24,54 @@ df_daily = pd.DataFrame()
 # Function to load and process data
 def load_data():
     global df_csv, df_historical_exercise, df_daily
-    logging.info("Loading data from MongoDB collections.")
+    logging.info("Carregando dados das coleções MongoDB.")
     try:
-        # Fetch BTC historical price data
+        # Recuperar dados da coleção 'csv_data'
         df_csv = fetch_data(collection_csv)
-        logging.info(f"Fetched BTC data: {df_csv.head()}")
+        logging.info(f"Dados do CSV recuperados:\n{df_csv.head()}")
+        logging.info(f"Tipos de dados do df_csv:\n{df_csv.dtypes}")
         
-        if not df_csv.empty and {'time', 'price', 'quantity'}.issubset(df_csv.columns):
-            df_csv['price'] = pd.to_numeric(df_csv['price'], errors='coerce')
-            df_csv['quantity'] = pd.to_numeric(df_csv['quantity'], errors='coerce')
-
-            # Detect and adjust 'time' column format (assuming it's in nanoseconds or milliseconds)
-            if not pd.api.types.is_datetime64_any_dtype(df_csv['time']):
-                try:
-                    df_csv['time'] = pd.to_datetime(df_csv['time'], unit='ns', errors='coerce')
-                    if df_csv['time'].isna().all():
-                        raise ValueError("Nanoseconds format failed")
-                    logging.info("Time converted using nanoseconds.")
-                except:
-                    df_csv['time'] = pd.to_datetime(df_csv['time'] // 1_000_000, unit='ms', errors='coerce')
-                    logging.info("Time converted using milliseconds.")
-            
-            df_csv.set_index('time', inplace=True)
-            df_csv = df_csv[df_csv.index >= "2020-01-01"]
-            df_daily = df_csv.resample('D').agg({
-                'price': ['mean', 'min', 'max'],
-                'quantity': 'sum'
-            }).reset_index()
-            df_daily.columns = ['time', 'price_mean', 'price_min', 'price_max', 'total_quantity']
-            logging.info(f"Daily resampled data: {df_daily.head()}")
+        if not df_csv.empty:
+            logging.info("Dados históricos de BTC carregados com sucesso.")
+            if {'price', 'quantity'}.issubset(df_csv.columns):
+                df_csv['price'] = pd.to_numeric(df_csv['price'], errors='coerce')
+                df_csv['quantity'] = pd.to_numeric(df_csv['quantity'], errors='coerce')
+                logging.info("Colunas 'price' e 'quantity' convertidas para numéricas.")
+                
+                # Filtrar dados a partir de 2020 e reamostrar diariamente
+                df_filtered = df_csv[df_csv.index >= pd.Timestamp("2020-01-01")]
+                logging.info(f"Filtrando dados a partir de 2020: {df_filtered.shape[0]} registros restantes.")
+                
+                df_daily = df_filtered.resample('D').agg({
+                    'price': ['mean', 'min', 'max'],
+                    'quantity': 'sum'
+                }).reset_index()
+                df_daily.columns = ['time', 'price_mean', 'price_min', 'price_max', 'total_quantity']
+                logging.info(f"Dados reamostrados diariamente:\n{df_daily.head()}")
+            else:
+                logging.warning("Colunas esperadas 'price' ou 'quantity' estão ausentes nos dados de preço de BTC.")
+                df_daily = pd.DataFrame()
         else:
-            logging.warning("Expected columns 'time', 'price', or 'quantity' missing or data is empty.")
+            logging.warning("Dados históricos de BTC estão vazios ou não puderam ser carregados.")
             df_daily = pd.DataFrame()
 
-        # Fetch historical exercise data
+        # Recuperar dados da coleção 'historical_exercise_data'
         df_historical_exercise = fetch_data(collection_historical_exercise)
-        logging.info(f"Fetched historical exercise data: {df_historical_exercise.head()}")
+        logging.info(f"Dados de exercício histórico recuperados:\n{df_historical_exercise.head()}")
+        logging.info(f"Tipos de dados do df_historical_exercise:\n{df_historical_exercise.dtypes}")
         
-        if not df_historical_exercise.empty and 'expiryDate' in df_historical_exercise.columns:
-            df_historical_exercise['expiryDate'] = pd.to_datetime(df_historical_exercise['expiryDate'], errors='coerce')
+        if not df_historical_exercise.empty:
+            if 'expiryDate' in df_historical_exercise.columns:
+                if not pd.api.types.is_datetime64_any_dtype(df_historical_exercise['expiryDate']):
+                    df_historical_exercise['expiryDate'] = pd.to_datetime(df_historical_exercise['expiryDate'], errors='coerce')
+                    logging.info("Coluna 'expiryDate' convertida para datetime.")
+            else:
+                logging.warning("Coluna esperada 'expiryDate' está ausente nos dados de exercício histórico.")
         else:
-            logging.warning("Expected column 'expiryDate' missing or data is empty.")
+            logging.warning("Dados de exercício histórico estão vazios ou não puderam ser carregados.")
 
     except Exception as e:
-        logging.error(f"Error loading data: {e}")
+        logging.error(f"Erro ao carregar dados: {e}")
 
 # Load data at startup
 load_data()
@@ -92,6 +96,10 @@ app_dash.layout = dbc.Container([
         interval=10*60*1000,  # Update every 10 minutes
         n_intervals=0
     ),
+    # Componentes de Download Separados
+    dcc.Download(id="download-aggregated-csv"),
+    dcc.Download(id="download-complete-csv"),
+    dcc.Download(id="download-historical-exercise-csv"),
     html.Div(id='dummy-output', style={'display': 'none'})
 ], fluid=True)
 
@@ -105,54 +113,69 @@ def render_content(tab):
 
 def generate_csv_layout():
     if not df_daily.empty:
-        fig_mean = px.line(df_daily, x='time', y='price_mean', title='Preço Médio Diário ao Longo do Tempo',
-                           labels={'time': 'Data', 'price_mean': 'Preço Médio (USD)'})
-        
-        fig_min_max = px.line(df_daily, x='time', y=['price_min', 'price_max'],
-                              title='Preços Mínimo e Máximo Diários ao Longo do Tempo',
-                              labels={'time': 'Data', 'value': 'Preço (USD)', 'variable': 'Tipo'})
-        
-        fig_quantity = px.bar(df_daily, x='time', y='total_quantity',
-                              title='Quantidade Total Diária de Transações',
-                              labels={'time': 'Data', 'total_quantity': 'Quantidade Total'})
+        # Gráfico para preço médio
+        fig_mean = px.line(
+            df_daily,
+            x='time',
+            y='price_mean',
+            title='Preço Médio Diário ao Longo do Tempo',
+            labels={'time': 'Data', 'price_mean': 'Preço Médio (USD)'},
+            markers=True
+        )
+
+        # Gráfico para preço mínimo e máximo
+        fig_min_max = px.line(
+            df_daily,
+            x='time',
+            y=['price_min', 'price_max'],
+            title='Preços Mínimo e Máximo Diários ao Longo do Tempo',
+            labels={'time': 'Data', 'value': 'Preço (USD)', 'variable': 'Tipo'},
+            markers=True
+        )
+
+        # Gráfico para quantidade total
+        fig_quantity = px.bar(
+            df_daily,
+            x='time',
+            y='total_quantity',
+            title='Quantidade Total Diária de Transações',
+            labels={'time': 'Data', 'total_quantity': 'Quantidade Total'},
+        )
 
         layout = dbc.Container([
-            dbc.Row([dbc.Col(dcc.Graph(id='mean-price', figure=fig_mean), md=12)]),
-            dbc.Row([dbc.Col(dcc.Graph(id='min-max-price', figure=fig_min_max), md=12)]),
-            dbc.Row([dbc.Col(dcc.Graph(id='total-quantity', figure=fig_quantity), md=12)]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='mean-price', figure=fig_mean), md=12)
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='min-max-price', figure=fig_min_max), md=12)
+            ]),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='total-quantity', figure=fig_quantity), md=12)
+            ]),
             dbc.Row([
                 dbc.Col([
                     html.Button("Baixar CSV Agregado", id="btn-download-aggregated", className="mt-3 btn btn-primary"),
-                    dcc.Download(id="download-dataframe-csv")
                 ], width='auto'),
                 dbc.Col([
-                    html.A("Baixar CSV Completo", href="/api/dados_completos", target="_blank", className="btn btn-secondary mt-3")
+                    html.Button("Baixar CSV Completo", id="btn-download-complete", className="mt-3 btn btn-secondary")
                 ], width='auto'),
             ], className="mt-3")
         ], fluid=True)
     else:
-        layout = dbc.Container([dbc.Row([dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados CSV.", className="text-center"))])], fluid=True)
+        layout = dbc.Container([
+            dbc.Row([
+                dbc.Col(html.H3("Nenhum dado encontrado ou erro ao carregar os dados CSV.", className="text-center"))
+            ])
+        ], fluid=True)
     return layout
-
-# Callback to download aggregated CSV
-@app_dash.callback(
-    Output("download-dataframe-csv", "data"),
-    Input("btn-download-aggregated", "n_clicks"),
-    prevent_initial_call=True
-)
-def download_csv(n_clicks):
-    if not df_daily.empty:
-        return dcc.send_data_frame(df_daily.to_csv, "dados_resumidos.csv")
-    return None
 
 def generate_historical_exercise_layout():
     if not df_historical_exercise.empty:
         dropdown = dcc.Dropdown(
             id='filter-strikeResult',
             options=[{'label': res, 'value': res} for res in df_historical_exercise['strikeResult'].unique()],
-            placeholder="Filter by Strike Result"
+            placeholder="Filtrar por Resultado de Strike"
         )
-        
         date_picker = dcc.DatePickerRange(
             id='date-picker',
             min_date_allowed=df_historical_exercise['expiryDate'].min(),
@@ -162,31 +185,64 @@ def generate_historical_exercise_layout():
         )
         
         layout = dbc.Container([
-            dbc.Row([dbc.Col(dropdown, width=4), dbc.Col(date_picker, width=8)], className="mb-4"),
-            dbc.Row([dbc.Col(dcc.Graph(id='historical-exercise-graph'), md=12)]),
+            dbc.Row([
+                dbc.Col(dropdown, width=4),
+                dbc.Col(date_picker, width=8),
+            ], className="mb-4"),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='historical-exercise-graph'), md=12)
+            ]),
             dbc.Row([
                 dbc.Col([
                     html.Button("Download Historical Exercise Data", id="btn-download-historical-exercise", className="mt-3 btn btn-primary"),
-                    dcc.Download(id="download-historical-exercise-csv")
-                ], width='auto')
+                ], width='auto'),
             ], className="mt-3")
         ], fluid=True)
     else:
-        layout = dbc.Container([dbc.Row([dbc.Col(html.H3("No historical exercise data available.", className="text-center"))])], fluid=True)
+        layout = dbc.Container([
+            dbc.Row([
+                dbc.Col(html.H3("Nenhum dado de exercício histórico disponível.", className="text-center"))
+            ])
+        ], fluid=True)
     return layout
 
-# Callback to download historical exercise CSV
+# Callback para download do CSV Agregado
+@app_dash.callback(
+    Output("download-aggregated-csv", "data"),
+    Input("btn-download-aggregated", "n_clicks"),
+    prevent_initial_call=True
+)
+def download_aggregated_csv(n_clicks):
+    logging.info(f"Botão de download CSV Agregado clicado {n_clicks} vezes.")
+    if not df_daily.empty:
+        return dcc.send_data_frame(df_daily.to_csv, "dados_resumidos.csv")
+    return None
+
+# Callback para download do CSV Completo
+@app_dash.callback(
+    Output("download-complete-csv", "data"),
+    Input("btn-download-complete", "n_clicks"),
+    prevent_initial_call=True
+)
+def download_complete_csv(n_clicks):
+    logging.info(f"Botão de download CSV Completo clicado {n_clicks} vezes.")
+    if not df_csv.empty:
+        return dcc.send_data_frame(df_csv.to_csv, "dados_completos.csv")
+    return None
+
+# Callback para download do CSV de Exercício Histórico
 @app_dash.callback(
     Output("download-historical-exercise-csv", "data"),
     Input("btn-download-historical-exercise", "n_clicks"),
     prevent_initial_call=True
 )
 def download_historical_exercise_csv(n_clicks):
+    logging.info(f"Botão de download Histórico de Exercício clicado {n_clicks} vezes.")
     if not df_historical_exercise.empty:
         return dcc.send_data_frame(df_historical_exercise.to_csv, "dados_historical_exercise.csv")
     return None
 
-# Callback to update historical exercise graph
+# Callback para atualizar o gráfico de exercício histórico
 @app_dash.callback(
     Output('historical-exercise-graph', 'figure'),
     [Input('filter-strikeResult', 'value'), Input('date-picker', 'start_date'), Input('date-picker', 'end_date')]
@@ -228,7 +284,7 @@ def update_historical_exercise_graph(strike_result, start_date, end_date):
     
     return fig
 
-# Callback to periodically update data
+# Callback para atualizar dados periodicamente
 @app_dash.callback(
     Output('dummy-output', 'children'),
     Input('interval-component', 'n_intervals')
